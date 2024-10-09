@@ -1737,15 +1737,15 @@ class ParallelTransformer(MegatronModule):
                                     inference_max_sequence_len=inference_max_sequence_len,
                                     rotary_pos_emb=rotary_pos_emb,
                                     self_attention_relative_position_bias=self_attention_relative_position_bias,
-<<<<<<< HEAD
-                                    cross_attention_relative_position_bias=cross_attention_relative_position_bias,
+                                    cross_attention_relative_position_bias=_cross_attention_relative_position_bias,
                                     checkpoint_core_attention=checkpoint_core_attention,
                                     decoder_max_sequence_len=decoder_max_sequence_len,
-                                    encoder_max_sequence_len=encoder_max_sequence_len,
+                                    encoder_max_sequence_len=_encoder_max_sequence_len,
                                 )
 
                         if self.return_select_layer < 0:
                             assert (
+                                parallel_state.get_pipeline_model_parallel_world_size() == 1
                             ), f"##{parallel_state.get_pipeline_model_parallel_world_size}"
                             if index == self.num_layers + self.return_select_layer:
                                 return hidden_states
