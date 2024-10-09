@@ -242,7 +242,7 @@ class StateDictTransform(Generic[F]):
 
             if isinstance(target_key, str):
                 target_matches = _match_keys(target_keys, target_key)
-                if target_matches.size < 1:
+                if target_matches.size == 1 and target_matches == np.array(None):
                     raise ValueError(f"No matches found for target key: {target_key}")
             else:
                 if isinstance(target_key, dict):
@@ -326,8 +326,28 @@ class StateDictTransform(Generic[F]):
 
 
 def _match_keys(keys: List[str], pattern: str) -> np.ndarray:
-    regex_pattern = re.compile("^" + pattern.replace("*", r"([^.]+)") + "$")
-    wildcard_matches = [[] for _ in range(pattern.count("*"))]
+    escaped_pattern = ''
+    i = 0
+    wildcard_positions = []
+    while i < len(pattern):
+        if pattern[i : i + 2] == '**':
+            escaped_pattern += r'(.+)'  # Match any characters including dots
+            wildcard_positions.append('**')
+            i += 2
+        elif pattern[i] == '*':
+            escaped_pattern += r'([^.]+)'  # Match any characters except dots
+            wildcard_positions.append('*')
+            i += 1
+        else:
+            if pattern[i] == '.':
+                escaped_pattern += r'\.'  # Escape the dot
+            else:
+                escaped_pattern += pattern[i]
+            i += 1
+
+    regex_pattern = re.compile("^" + escaped_pattern + "$")
+    num_wildcards = len(wildcard_positions)
+    wildcard_matches = [[] for _ in range(num_wildcards)]
 
     for key in filter(lambda x: x is not None, keys):
         match = regex_pattern.match(key)
