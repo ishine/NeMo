@@ -253,6 +253,7 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule, adapter_mixins.Adap
                 moe_dropout=encoder_cfg.get('moe_dropout', 0.0),
                 position_embedding_type=encoder_cfg.get('position_embedding_type', 'learned_absolute'),
                 use_flash_attention=encoder_cfg.get('use_flash_attention', False),
+                n_transformers=encoder_cfg.get('n_transformers', 1),
             )
 
         if add_decoder:
@@ -732,9 +733,11 @@ class MegatronTokenLevelEncoderDecoderSpeechLLMModule(MegatronTokenLevelEncoderD
         self.speech_head_type = "token_level"
         self.attn_prior_scaledown_start_step = 10000
         self.attn_prior_end_step = 11000
+        self.use_alignment_loss = False
         self.return_all_crossattention_probs = False
         self.logging_step = False
         self.num_cross_attention_heads = 12  # 12 for 220m T5, 16 for 11b T5
+        self.enc_output_to_layers = None
 
     def get_decoder_embeddings(self, dec_input_ids, dec_position_ids, token_type_ids):
         if dec_input_ids.dim() <= 2:
@@ -750,9 +753,11 @@ class MegatronTokenLevelEncoderDecoderSpeechLLMModule(MegatronTokenLevelEncoderD
                 else:
                     # For the rest of the channels (speech), use the speech embedding layer. No need for position, since already added in first layer.
                     current = self.speech_tokens_embeddings[i - 1](dec_input_ids[:, i, :]).permute(1, 0, 2)
+                    # @pneekhara - Commenting the below because we always want to include all channels for speech.
+                    # @pneekhara - include_channel_flag can become 0 when doing autoregressive inference and the first timestep is zeros
                     # For text inputs, only include 1st channel embeddings. Zero-out others.
-                    include_channel_flag = (torch.sum(dec_input_ids[:, i, :], dim=1) > 0).float()  # [B]
-                    current = current * include_channel_flag.unsqueeze(0).unsqueeze(2)
+                    # include_channel_flag = (torch.sum(dec_input_ids[:, i, :], dim=1) > 0).float()  # [B]
+                    # current = current * include_channel_flag.unsqueeze(0).unsqueeze(2)
                     dec_input = dec_input + current
 
         return dec_input
@@ -798,14 +803,25 @@ class MegatronTokenLevelEncoderDecoderSpeechLLMModule(MegatronTokenLevelEncoderD
         # In order of precedence, we use enc_output, enc_input, and then enc_input_ids to determine the encoder sequence length.
         if enc_output is not None:
             # If enc_output is provided in `batch_for_pipeline`, we need to transpose it from [B x S x H] -> [S x B x H].
-            enc_output = enc_output.transpose(0, 1)
-            enc_seq_length = enc_output.size(0)
+            if isinstance(enc_output, list):
+                encoder_self_attention_relative_position_bias = [None for _ in enc_output]
+                enc_output = [x.transpose(0, 1) for x in enc_output]
+                enc_seq_length = [x.size(0) for x in enc_output]
+            else:
+                enc_output = enc_output.transpose(0, 1)
+                enc_seq_length = enc_output.size(0)
         elif enc_input is not None:
             # If enc_input is provided, we need to transpose it from [B x S x H] -> [S x B x H].
-            enc_input = enc_input.transpose(0, 1)
-            enc_seq_length = enc_input.size(0)
+            if isinstance(enc_input, list):
+                encoder_self_attention_relative_position_bias = [None for _ in enc_input]
+                enc_input = [x.transpose(0, 1) for x in enc_input]
+                enc_seq_length = [x.size(0) for x in enc_input]
+            else:
+                enc_input = enc_input.transpose(0, 1)
+                enc_seq_length = enc_input.size(0)
         # Only need to run encoder embedding and position ids if enc_input or enc_output is not provided.
         elif enc_input_ids is not None:
+            assert False, "This should not be reached for speech models"
             enc_seq_length = enc_input_ids.size(1)
             if self.pre_process and self.add_encoder:
                 # We don't need position ids for RPE, because the embedding layer does not have position embeddings.
@@ -830,16 +846,18 @@ class MegatronTokenLevelEncoderDecoderSpeechLLMModule(MegatronTokenLevelEncoderD
             else:
                 enc_input = None
         else:
+            assert False, "This should not be reached for speech models"
             # This should only happen with PP > 1 for enc-dec prompt learning models
             enc_seq_length = enc_attn_mask.size(1)
 
         if self.add_encoder and self.encoder_relative_position_embedding is not None:
+            assert False, "Not implemented for speech models yet."
             encoder_self_attention_relative_position_bias = self.encoder_relative_position_embedding(
-                query_seq_length=enc_seq_length,
-                key_seq_length=enc_seq_length,
+                query_seq_length=enc_seq_length, key_seq_length=enc_seq_length,
             )
 
         if output_enc_hidden_only:
+            assert False, "Not implemented for speech models yet."
             # When pipeline parallel > 1 we need to make sure encoder exist (will be missing in decoder)
             # Speecht5 should not go here for inference
             if enc_output is None and self.enc_dec_model.encoder is not None:
@@ -872,13 +890,14 @@ class MegatronTokenLevelEncoderDecoderSpeechLLMModule(MegatronTokenLevelEncoderD
                     # On step 0 when set_inference_key_value_memory is True, we need all inputs in case
                     # we are using decoder context
                     # Else on step >= 1, only need last input
-                    logging.debug("Clipping dec_input")
-                    dec_input = dec_input[-1, :, :].unsqueeze(0)
+                    logging.debug("Clipping dec_input and only keep the last input.")
+                    dec_input = dec_input[-1, :, :].unsqueeze(0)  # shape (b, embed_dim)
             else:
                 # Note: This is when the decoder itself is split across PP ranks.
                 dec_input = None
 
             if self.add_decoder and self.decoder_relative_position_embedding is not None:
+                assert False, "This should not be reached."
                 decoder_self_attention_relative_position_bias = self.decoder_relative_position_embedding(
                     query_seq_length=dec_input_ids.size(1), key_seq_length=dec_input_ids.size(1)
                 )
@@ -893,38 +912,48 @@ class MegatronTokenLevelEncoderDecoderSpeechLLMModule(MegatronTokenLevelEncoderD
                     decoder_cross_attention_relative_position_bias = None
 
             return_all_crossattention_probs = self.return_all_crossattention_probs
-            if cross_attention_prior is not None:
-                # cross_attention_prior shape [B, dec_len, enc_len]
-                # Repeat it to make it [B, 12, dec_len, enc_len]
-                attn_prior_end_step = self.attn_prior_end_step
-                attn_prior_scaledown_start_step = self.attn_prior_scaledown_start_step
-                num_attention_heads = self.num_cross_attention_heads
-                assert attn_prior_scaledown_start_step <= attn_prior_end_step
-                logging.debug(
-                    f"attn_prior_scaledown_start_step: {attn_prior_scaledown_start_step}, attn_prior_scaledown_start_step: {attn_prior_end_step}"
-                )
-                if global_step >= attn_prior_end_step:
-                    decoder_cross_attention_relative_position_bias = None
-                elif global_step > attn_prior_scaledown_start_step and global_step < attn_prior_end_step:
-                    total_annealing_steps = attn_prior_end_step - attn_prior_scaledown_start_step
-                    curr_annealing_step = global_step - attn_prior_scaledown_start_step
-                    curr_cross_attention_prior = cross_attention_prior + (
-                        (1.0 - cross_attention_prior) * curr_annealing_step / total_annealing_steps
+            single_encoder = False
+            if not isinstance(cross_attention_prior, list):
+                single_encoder = True
+                cross_attention_prior = [cross_attention_prior]
+
+
+            decoder_cross_attention_relative_position_bias = []
+            for _cross_attention_prior in cross_attention_prior:
+                _decoder_cross_attention_relative_position_bias = None
+                if _cross_attention_prior is not None:
+                    # cross_attention_prior shape [B, dec_len, enc_len]
+                    # Repeat it to make it [B, 12, dec_len, enc_len]
+                    attn_prior_end_step = self.attn_prior_end_step
+                    attn_prior_scaledown_start_step = self.attn_prior_scaledown_start_step
+                    num_attention_heads = self.num_cross_attention_heads
+                    assert attn_prior_scaledown_start_step <= attn_prior_end_step
+                    logging.debug(
+                        f"attn_prior_scaledown_start_step: {attn_prior_scaledown_start_step}, attn_prior_scaledown_start_step: {attn_prior_end_step}"
                     )
-                    decoder_cross_attention_relative_position_bias = curr_cross_attention_prior.unsqueeze(1).repeat(
-                        1, num_attention_heads, 1, 1
-                    )
-                    decoder_cross_attention_relative_position_bias = torch.log(
-                        decoder_cross_attention_relative_position_bias + 1e-8
-                    )
-                else:
-                    decoder_cross_attention_relative_position_bias = cross_attention_prior.unsqueeze(1).repeat(
-                        1, num_attention_heads, 1, 1
-                    )
-                    decoder_cross_attention_relative_position_bias = torch.log(
-                        decoder_cross_attention_relative_position_bias + 1e-8
-                    )
-                return_all_crossattention_probs = return_all_crossattention_probs or self.logging_step
+                    if global_step >= attn_prior_end_step:
+                        _decoder_cross_attention_relative_position_bias = None
+                    elif global_step > attn_prior_scaledown_start_step and global_step < attn_prior_end_step:
+                        total_annealing_steps = attn_prior_end_step - attn_prior_scaledown_start_step
+                        curr_annealing_step = global_step - attn_prior_scaledown_start_step
+                        curr_cross_attention_prior = _cross_attention_prior + (
+                            (1.0 - _cross_attention_prior) * curr_annealing_step / total_annealing_steps
+                        )
+                        _decoder_cross_attention_relative_position_bias = curr_cross_attention_prior.unsqueeze(1).repeat(
+                            1, num_attention_heads, 1, 1
+                        )
+                        _decoder_cross_attention_relative_position_bias = torch.log(_decoder_cross_attention_relative_position_bias + 1e-8)
+                    else:
+                        _decoder_cross_attention_relative_position_bias = _cross_attention_prior.unsqueeze(1).repeat(
+                            1, num_attention_heads, 1, 1
+                        )
+                        _decoder_cross_attention_relative_position_bias = torch.log(_decoder_cross_attention_relative_position_bias + 1e-8)
+                decoder_cross_attention_relative_position_bias.append(_decoder_cross_attention_relative_position_bias)
+
+            return_all_crossattention_probs = return_all_crossattention_probs or self.logging_step
+
+            if single_encoder:
+                decoder_cross_attention_relative_position_bias = decoder_cross_attention_relative_position_bias[0]
 
             output = self.enc_dec_model(
                 enc_input=enc_input,
@@ -945,6 +974,7 @@ class MegatronTokenLevelEncoderDecoderSpeechLLMModule(MegatronTokenLevelEncoderD
                 set_inference_key_value_memory=set_inference_key_value_memory,
                 decoder_max_sequence_len=decoder_max_sequence_len,
                 encoder_max_sequence_len=encoder_max_sequence_len,
+                enc_output_to_layers=self.enc_output_to_layers
             )
 
             alignment_loss = None
@@ -952,9 +982,9 @@ class MegatronTokenLevelEncoderDecoderSpeechLLMModule(MegatronTokenLevelEncoderD
                 dec_output, enc_output = output  # [s, b, h]
                 if return_all_crossattention_probs:
                     dec_output, attention_scores = dec_output
-                    attention_probs = [torch.softmax(attention_score, dim=-1) for attention_score in attention_scores]
+                    attention_probs = [torch.softmax(attention_score, dim=-1) for lidx, attention_score in enumerate(attention_scores) if lidx in self.alignment_decoder_layerids]
 
-                    if text_limits is not None and hasattr(self, "forward_sum_loss"):
+                    if text_limits is not None and self.use_alignment_loss and hasattr(self, "forward_sum_loss"):
                         attention_scores_filtered = [
                             attention_scores[lidx] for lidx in self.alignment_decoder_layerids
                         ]
@@ -967,10 +997,10 @@ class MegatronTokenLevelEncoderDecoderSpeechLLMModule(MegatronTokenLevelEncoderD
                         # align_every_n_head: eg if set to 2, will skip every other head
                         # if set to 12, will select 1 head from every layer
                         align_every_n_head = self.align_every_n_head
-                        dec_start_idx = self.decoder_context_len + 1  # +1 to remove bos
+                        dec_start_idx = self.decoder_context_len + 1 # +1 to remove bos
                         attention_scores_sliced = attention_scores_combined[
-                            :, ::align_every_n_head, dec_start_idx:, text_start_idx : -(2 + end_offset)
-                        ]  # -2 to remove eos and pad
+                            :,::align_every_n_head,dec_start_idx:,text_start_idx:-(2 + end_offset)
+                        ] # -2 to remove eos and pad
                         attention_logprobs = (
                             attention_scores_sliced  # not taking log_softmax, since we will do that in loss function
                         )
@@ -1086,6 +1116,11 @@ class MegatronTokenLevelEncoderDecoderSpeechLLMModule(MegatronTokenLevelEncoderD
                     if self.hiddens_cfg is not None:
                         raise NotImplementedError("Not currently implemented for speechllm")
                     else:
+                        # all_speech_logits: tensor, (b, s, 1024, 8), all layers of speech.
+                        # token_logits: tensor, (b, s, vocab_size), text token logits.
+                        # speech_logits: tensor, (b, s, 1024, 7), 1-7 layers of speech.
+                        # attention_probs: tensor or None, (b, s, )
+                        # enc_output: tensor, (virtual_token_len+context_token_len+question_token_len+extra_id_0+[SEP], b, )
                         return all_speech_logits, [token_logits, speech_logits, attention_probs, enc_output]
 
             elif self.add_decoder and not self.add_encoder:

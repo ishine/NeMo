@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """
-   python3 /opt/NeMo/scripts/nlp_language_modeling/convert_gemma_hf_to_nemo.py \
+   python3 /opt/NeMo/scripts/checkpoint_converters/convert_llava_nemo_to_hf.py \
    --input_name_or_path /path/to/llava-v1.5-7b.nemo \
    --hf_input_path llava-hf/llava-1.5-7b-hf \
    --hf_output_path=/path/to/hf_updated_checkpoint
@@ -150,10 +150,13 @@ def reverse_adjust_tensor_shapes(model, hf_model, nemo_state_dict):
     dict: The updated state dictionary with original tensor shapes and structures.
     """
     model_config = model.cfg
-    num_query_groups = model_config["num_query_groups"]
     head_num = model_config["num_attention_heads"]
     hidden_size = model_config["hidden_size"]
     head_size = model_config["kv_channels"]
+    if "num_query_groups" in model_config and model_config["num_query_groups"] is not None:
+        num_query_groups = model_config["num_query_groups"]
+    else:
+        num_query_groups = head_num
     if head_size is None:
         head_size = hidden_size // head_num
     heads_per_group = head_num // num_query_groups
@@ -258,6 +261,12 @@ def get_args():
         default=None,
         help="Output HF model path, " "with the same format as above but user's own weights",
     )
+    parser.add_argument(
+        "--cpu_only",
+        action="store_true",
+        help="Load model in cpu only. Useful if the model cannot fit in GPU memory, "
+        "but this option makes the conversion script significantly slower.",
+    )
     parser.add_argument("--skip_verification", action="store_true")
 
     args = parser.parse_args()
@@ -274,9 +283,23 @@ def convert(args):
         os.path.join(os.path.dirname(__file__), '../../examples/multimodal/multimodal_llm/neva/conf/llava_config.yaml')
     )
     trainer = MegatronTrainerBuilder(nemo_config).create_trainer()
+    model_config = MegatronNevaModel.restore_from(
+        restore_path=args.input_name_or_path, trainer=trainer, return_config=True
+    )
+    model_config.tensor_model_parallel_size = 1
+    model_config.pipeline_model_parallel_size = 1
+    if args.cpu_only:
+        logging.info("******** Loading model on CPU. This will take a significant amount of time.")
+        map_location = torch.device('cpu')
+        model_config.use_cpu_initialization = True
+    else:
+        map_location = None
+
     model = MegatronNevaModel.restore_from(
         restore_path=args.input_name_or_path,
         trainer=trainer,
+        override_config_path=model_config,
+        map_location=map_location,
         save_restore_connector=NLPSaveRestoreConnector(),
     )
 
@@ -300,7 +323,7 @@ def convert(args):
         batch_dict = hf_tokenizer(input_texts, max_length=512, padding=True, truncation=True, return_tensors='pt')
         batch_dict_cuda = {k: v.cuda() for k, v in batch_dict.items()}
         hf_model = hf_model.cuda().eval()
-        model = model.eval()
+        model = model.cuda().eval()
 
         hf_outputs = hf_model(**batch_dict_cuda, output_hidden_states=True)
         ids = batch_dict_cuda['input_ids']
@@ -315,7 +338,7 @@ def convert(args):
             attn_mask, _, pos_ids = attn_mask_and_pos_ids
 
             outputs = model(
-                tokens=tokens, text_position_ids=pos_ids.cuda(), attention_mask=attn_mask.cuda(), labels=None
+                tokens=tokens.cuda(), text_position_ids=pos_ids.cuda(), attention_mask=attn_mask.cuda(), labels=None
             )
 
         hf_next_token = hf_outputs.logits[0, -1].argmax()

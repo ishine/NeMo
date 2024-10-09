@@ -17,18 +17,17 @@ import json
 import random
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import ClassVar, List, Optional, Union
 
 import numpy as np
 import torch
-
-# from encodec import EncodecModel
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
 from tqdm.auto import tqdm
 
 from nemo.collections.asr.parts.preprocessing.features import WaveformFeaturizer
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
+from nemo.collections.common.tokenizers.text_to_speech.ipa_lexicon import get_ipa_punctuation_list
 from nemo.collections.common.tokenizers.text_to_speech.tokenizer_utils import any_locale_text_preprocessing
 from nemo.collections.nlp.data.language_modeling.megatron.base_prompt_learning_dataset import BasePromptLearningDataset
 from nemo.collections.nlp.models.language_modeling.megatron_t5_model import T5Sentinel
@@ -46,12 +45,33 @@ from nemo.utils import logging
 __all__ = ['T5SpeechLMDataset']
 
 
+def get_full_list_puncts():
+    punct_set = set()
+    for locale_id in ["en-US", "de-DE", "fr-FR"]:
+        punct_list = get_ipa_punctuation_list(locale=locale_id)
+        punct_set.update(punct_list)
+    return sorted(punct_set)
+
+
 @dataclass
 class G2PConfig:
     _target_: str = "nemo.collections.tts.g2p.models.en_us_arpabet.EnglishG2p"
     phoneme_dict: str = "scripts/tts_dataset_files/cmudict-0.7b_nv22.10"
     heteronyms: str = "scripts/tts_dataset_files/heteronyms-052722"
     phoneme_probability: float = 0.5
+
+
+@dataclass
+class EnglishIpaG2pConfig:
+    _target_: str = "nemo.collections.tts.g2p.models.i18n_ipa.IpaG2p"
+    phoneme_dict: str = "scripts/tts_dataset_files/ipa_cmudict-0.7b_nv23.01.txt"
+    locale: str = "en-US"
+    heteronyms: str = "scripts/tts_dataset_files/heteronyms-052722"
+    phoneme_probability: float = 0.5
+    grapheme_case: str = "upper"
+    use_stresses: bool = True
+    use_chars: bool = True
+    ignore_ambiguous_words: bool = False
 
 
 @dataclass
@@ -67,14 +87,37 @@ class TextTokenizer:
 
 
 @dataclass
+class EnglishIpaTextTokenizer:
+    _target_: str = "nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.IPATokenizer"
+    locale: str = "en-US"
+    punct: bool = True
+    # Define non_default_punct_list as a ClassVar to explicitly mark it as a class variable
+    non_default_punct_list: ClassVar[List[str]] = get_full_list_puncts()
+    apostrophe: bool = True
+    pad_with_space: bool = True
+    add_blank_at: bool = True
+    g2p: EnglishIpaG2pConfig = EnglishIpaG2pConfig()
+
+
+@dataclass
 class TextTokenizerConfig:
     text_tokenizer: TextTokenizer = TextTokenizer()
 
 
-def _get_default_text_tokenizer_conf(phoneme_probability=0.5):
-    g2p = G2PConfig(phoneme_probability=phoneme_probability)
-    _text_tokenizer = TextTokenizer(g2p=g2p)
-    text_tokenizer: TextTokenizerConfig = TextTokenizerConfig(text_tokenizer=_text_tokenizer)
+@dataclass
+class EnglishIpaTextTokenizerConfig:
+    text_tokenizer: EnglishIpaTextTokenizer = EnglishIpaTextTokenizer()
+
+
+def _get_default_text_tokenizer_conf(phoneme_probability: float = 0.5, use_ipa: bool = False):
+    if use_ipa:
+        g2p = EnglishIpaG2pConfig(phoneme_probability=phoneme_probability)
+        _text_tokenizer = EnglishIpaTextTokenizer(g2p=g2p)
+        text_tokenizer: EnglishIpaTextTokenizerConfig = EnglishIpaTextTokenizerConfig(text_tokenizer=_text_tokenizer)
+    else:
+        g2p = G2PConfig(phoneme_probability=phoneme_probability)
+        _text_tokenizer = TextTokenizer(g2p=g2p)
+        text_tokenizer: TextTokenizerConfig = TextTokenizerConfig(text_tokenizer=_text_tokenizer)
     return OmegaConf.create(OmegaConf.to_yaml(text_tokenizer))
 
 
@@ -142,10 +185,12 @@ class T5SpeechLMDataset(BasePromptLearningDataset):
         context_duration_max: Optional[float] = 5.0,
         skip_datasets: Optional[List[str]] = [],  # substrings of dataset names to skip
         english_only_model: Optional[bool] = False,
-        context_conditioning: Optional[str] = "decoder",  # encoder or decoder
-        use_beta_binomial_interpolator: Optional[str] = False,  # encoder or decoder
-        context_slice_method: Optional[str] = "random",  # random or fixed
+        context_conditioning: Optional[str] = "decoder", # encoder or decoder
+        use_beta_binomial_interpolator: Optional[str] = False, # encoder or decoder
+        context_slice_method: Optional[str] = "random", # random or fixed
         phoneme_probability: Optional[float] = 0.5,
+        encoder_type: Optional[str] = "single_transformer",
+        use_ipa: bool = False,
         **kwargs,
     ):
         """
@@ -161,6 +206,8 @@ class T5SpeechLMDataset(BasePromptLearningDataset):
         sup_data_path: Optional[Union[Path, str]] = None, - Supplementary folder path where codecs are stored.
         speech_offset: Optional[int] = None, - if speech tokens then add this offset to the token indices to distinguish between text and speech tokens.
         lm_vocab_size: Optional[int] = None, - vocab size of the original language model (phoneme tokens start from this index)
+        english_only_model: Optional[bool] = False, specify if monolingual or multi-lingual modeling.
+        use_ipa: bool = False, specify if using IPA tokens or default ARPABET tokens. Either choice still mixes chars.
         **kwargs,
         """
         # These two variables need to be set before calling super().__init__() because the parent class calls `load_data()` which requires these attributes.
@@ -201,9 +248,7 @@ class T5SpeechLMDataset(BasePromptLearningDataset):
         self.english_only_model = english_only_model
         self.phoneme_tokenizer = None
         if english_only_model:
-            self.phoneme_tokenizer = instantiate(
-                _get_default_text_tokenizer_conf(phoneme_probability=phoneme_probability)
-            ).text_tokenizer
+            self.phoneme_tokenizer = instantiate(_get_default_text_tokenizer_conf(phoneme_probability=phoneme_probability, use_ipa=use_ipa)).text_tokenizer
         else:
             self.g2p = {"fr": lambda x: x}
             if kwargs.get("g2p", None):
@@ -222,12 +267,8 @@ class T5SpeechLMDataset(BasePromptLearningDataset):
 
         self.context_conditioning = context_conditioning
         if self.context_conditioning == "decoder":
-            assert (
-                self.context_duration_min == self.context_duration_max
-            ), "For decoder conditioning, context_duration_min and context_duration_max should be same"
-            self.decoder_context_len = int(
-                self.context_duration_min * self.codebook_fps
-            )  # TODO: Just take from model var?
+            assert self.context_duration_min == self.context_duration_max, "For decoder conditioning, context_duration_min and context_duration_max should be same"
+            self.decoder_context_len = int(self.context_duration_min * self.codebook_fps) #TODO: Just take from model var?
 
         # Initialize sup_data_path, sup_data_types and run preprocessing methods for every supplementary data type\
         self.sup_data_path = None
@@ -249,13 +290,9 @@ class T5SpeechLMDataset(BasePromptLearningDataset):
         self.transformer_type = kwargs.pop('transformer_type', 'T5')
         self.skip_datasets = skip_datasets
 
-        self.beta_binomial_interpolator = (
-            BetaBinomialInterpolator(scaling_factor=self.attention_prior_scaling_factor)
-            if use_beta_binomial_interpolator
-            else None
-        )
+        self.beta_binomial_interpolator = BetaBinomialInterpolator(scaling_factor=self.attention_prior_scaling_factor) if use_beta_binomial_interpolator else None
         self.context_slice_method = context_slice_method
-
+        self.encoder_type = encoder_type
         super().__init__(
             datasets=datasets,
             tokenizer=tokenizer,
@@ -302,6 +339,7 @@ class T5SpeechLMDataset(BasePromptLearningDataset):
         asr = 0
         i = 0
         logging.info(f"copy_dataset len === {len(copy_dataset)}")
+        examples = []
         for json_line in tqdm(copy_dataset):
             i += 1
 
@@ -353,7 +391,8 @@ class T5SpeechLMDataset(BasePromptLearningDataset):
                     doc["answer_duration"] * (self.codebook_fps + 1) + 400
                 )  # 400 is the max ref speaker audio
             elif ("Text to speech this" in question_in_manifest) or ('Phoneme TTS' in question_in_manifest):
-                approx_context_len = 400  # Max length of Ref TTS audio
+                # approx_context_len = 400
+                approx_context_len = 5 * (self.codebook_fps + 1)  # better than 400. TODO: pneekhara: Need to change things for multi-encoder vs single encoder based filtering.
             elif "Edit Speech" in question_in_manifest:
                 approx_context_len = doc["answer_duration"] * (self.codebook_fps + 1)
             else:
@@ -384,12 +423,12 @@ class T5SpeechLMDataset(BasePromptLearningDataset):
                     < approx_context_len + approx_question_len + approx_answer_len
                     < self.max_seq_length
                 ):
-                    self.examples.append(doc)
+                    examples.append(doc)
                 elif (self.transformer_type == "T5") and (
                     self.min_seq_length < approx_context_len + approx_question_len < self.max_seq_length
                     and self.min_seq_length < approx_answer_len < self.max_seq_length
                 ):
-                    self.examples.append(doc)
+                    examples.append(doc)
                 else:
                     logging.debug(f"skipped for {approx_context_len + approx_question_len} {approx_answer_len} len")
                     skipped += 1
@@ -398,8 +437,10 @@ class T5SpeechLMDataset(BasePromptLearningDataset):
                 logging.debug(f"skipped for {doc['answer']} as it is in skip_datasets")
                 skipped += 1
 
-        logging.info(f"After Process len(self.examples) {len(self.examples)} TTS = {tts} ASR = {asr}")
+        # logging.info(f"After Process len(self.examples) {len(self.examples)} TTS = {tts} ASR = {asr}")
         logging.info(f'Skipped {skipped} sentences, sequence length too short or too long even after truncation')
+
+        return examples
 
     def __getitem__(self, idx):
         doc = self.examples[idx]
@@ -426,7 +467,15 @@ class T5SpeechLMDataset(BasePromptLearningDataset):
 
         # Format the input example according to the template
         # Get context, question and answer codes in a dict.
-        question_text = doc["question"].replace("Phoneme TTS", "").replace("Text to speech this", "").strip()
+        # TODO @xueyang: declare the instructions when initializing the dataset so that they can be re-used. Temporally
+        #  hardcode them here.
+        question_text = doc["question"].strip()
+        instructions = ["Phoneme TTS", "Text to speech this"]
+        for prefix in instructions:
+            if doc["question"].startswith(prefix):
+                question_text = doc["question"][len(prefix):].strip()
+                break
+
         input_dict = self._insert_data_in_template(prompt_template_fields, doc, answer_field)
         lang = Lang[doc.get("lang", "en")]
         context_tokens = input_dict['context']
@@ -461,6 +510,7 @@ class T5SpeechLMDataset(BasePromptLearningDataset):
             context_tokens[0] = context_tokens[0][:, :end_token_index]
 
         # Get virtual tokens
+        # `virtual_tokens` is "<prompt_0><prompt_1><prompt_2>".
         virtual_tokens = self._insert_virtual_token_placeholders(input_example.split(' ')[0], virtual_token_splits)
         # print("virtual_tokens", virtual_tokens)
 
@@ -505,7 +555,13 @@ class T5SpeechLMDataset(BasePromptLearningDataset):
             question_tokens = pad_text_to_speech_dims(
                 question_tokens, self.tokenizer.pad_id, self.num_speech_codebooks - 1
             )
-        context_and_question_tokens = torch.cat([context_tokens, question_tokens], dim=1)
+
+        # context_tokens: tensor, (num_speech_codebooks, audio_context_len)
+        # question_tokens: tensor, (num_speech_codebooks, instruction token len + question token len + 1 (<extra_id_0> + 1 ([SEP])), only first row includes token ids while all other rows are all zeros (pad)
+        if self.encoder_type == "multi_transformer":
+            context_and_question_tokens = [context_tokens, question_tokens]
+        else:
+            context_and_question_tokens = torch.cat([context_tokens, question_tokens], dim=1)
 
         # get answer ids
         if answer_field in doc.keys():  # training and validation
@@ -539,10 +595,18 @@ class T5SpeechLMDataset(BasePromptLearningDataset):
         dec_input = None
         dec_labels = None
 
+        # if single-encoder and context_condition is decoder, answer_text_ids = [CLS_id, context audio code tensors, zero-pad, answer audio code tensor, SEP_id]
+        # if multi-encoder, answer_text_ids = [CLS_id, answer audio codec tensor, SEP_id], so dec_input will not include audio context anymore.
         if answer_field in doc.keys():  # training and validation
             dec_input = answer_text_ids[:-1]
             dec_labels = answer_text_ids[1:]
 
+        # if single-encoder and context_condition is decoder:
+        #   dec_input: shape=(self.num_speech_codebooks, 1([CLS]) + len(context audio frames) + 1([PAD]) + len(answer audio frames))
+        #   dec_labels: shape=(self.num_speech_codebooks, len(context audio frames) + 1([PAD]) + len(answer audio frames) + 1([SEP]))
+        # if multi-encoder:
+        #   dec_input: (num_speech_codebooks, 1([CLS]) + len(answer audio frames))
+        #   dec_labels: (num_speech_codebooks, len(answer audio frames) + 1([SEP]))
         dec_input, dec_input_len = self.list_to_tensor(dec_input, True)
         dec_labels, dec_labels_len = self.list_to_tensor(dec_labels, True)
         is_speech = True if doc["answer_type"] != "TEXT" else False
@@ -579,7 +643,10 @@ class T5SpeechLMDataset(BasePromptLearningDataset):
                 dec_input_len = torch.tensor(dec_input.shape[1]).long()
                 dec_labels_len = torch.tensor(dec_labels.shape[1]).long()
 
-        enc_len = context_tokens_len + question_tokens_len + virtual_tokens_len
+        if self.encoder_type == "multi_transformer":
+            enc_len = question_tokens_len + virtual_tokens_len
+        else:
+            enc_len = context_tokens_len + question_tokens_len + virtual_tokens_len
         # TODO: Remove hardcoding
         start_of_question_offset = 4  # For both "Text to Speech this" and "Phoneme TTS"
         end_of_question_offset = 2
@@ -602,27 +669,38 @@ class T5SpeechLMDataset(BasePromptLearningDataset):
                         scaling_factor=self.attention_prior_scaling_factor,
                     )
                 )
-            # import ipdb; ipdb.set_trace()
-            cross_attention_prior[
-                prior_dec_start_idx:,
-                virtual_tokens_len + context_tokens_len + start_of_question_offset : -end_of_question_offset,
-            ] = cross_attention_question_prior
+            if self.encoder_type == "multi_transformer":
+                cross_attention_prior[
+                    prior_dec_start_idx:, virtual_tokens_len + start_of_question_offset : -end_of_question_offset
+                ] = cross_attention_question_prior
+            else:
+                cross_attention_prior[
+                    prior_dec_start_idx:, virtual_tokens_len + context_tokens_len + start_of_question_offset : -end_of_question_offset
+                ] = cross_attention_question_prior
 
+        if self.encoder_type == "multi_transformer":
+            context_and_question_len = [context_tokens_len, question_tokens_len]
+        else:
+            context_and_question_len = context_tokens_len + question_tokens_len
         return (
-            taskname_id,
-            virtual_tokens,
-            virtual_tokens_len,
-            context_tokens_len,
+            taskname_id,  # List, only one item. token id for "squad"
+            virtual_tokens,  # Tensor, shape=(3,). token id for ['<prompt_0>', '<prompt_1>', '<prompt_2>']
+            virtual_tokens_len,  # tensor, 3
+            context_tokens_len,  # tensor, 1
+            # tensor if single encoder and context_condition is encoder, shape=(self.num_speech_codebooks, 1(context) + question len + 1(<extra_id_0>) + 1([SEP])). only first row includes token ids while all other rows are all zeros (pad).
+            # list if multi-encoder and context_condition is encoder.
             context_and_question_tokens,
-            context_tokens_len + question_tokens_len,
-            dec_input,
-            dec_input_len,
-            dec_labels,
-            dec_labels_len,
-            is_speech,
-            cross_attention_prior,
-            lang.value,
-            question_text,
+            # tensor scalar if single encoder and context_condition is decoder, 1 + (question len + 1 + 1).
+            # list if multi-encoder and context_condition is encoder.
+            context_and_question_len,
+            dec_input,  # tensor, shape=(self.num_speech_codebooks, 1 CLS + context audio frame len + 1 pad + answer audio frame len), first column is [CLS_id, 0*7]^T
+            dec_input_len,  # scalar tensor, 1 CLS + context audio frame len + 1 pad + answer audio frame len. 1 corresponds to CLS id
+            dec_labels,  # tensor, shape=(self.num_speech_codebooks, context audio frame len + 1 pad + answer frame len + 1 SEP).
+            dec_labels_len,  # tensor, context audio frame len + 1 PAD + answer frame len + 1 SEP.  1 corresponds to SEP id.
+            is_speech,  # True
+            cross_attention_prior,  # tensor, shape=(dec_labels_len, context_tokens_len + question_tokens_len + virtual_tokens_len).
+            lang.value,  # int,
+            question_text,  # str, answer transcript without question type (Phoneme TTS or Text to speech this).
         )
 
     def _truncate_input_speech(self, context_tokens, question_tokens, virtual_tokens):
@@ -812,20 +890,23 @@ class T5SpeechLMDataset(BasePromptLearningDataset):
             if _text.startswith("Phoneme TTS"):
                 lang = doc.get("lang", "en")
                 instruction_tokens = self._get_text_tokens("Phoneme TTS")
-                field_tokens = self._get_phoneme_tokens(_text.replace("Phoneme TTS ", ""), lang=lang)
+                field_tokens = self._get_phoneme_tokens(_text[len("Phoneme TTS"):].strip(), lang=lang)
                 field_tokens = instruction_tokens + field_tokens
             elif _text.startswith("Edit Speech"):
                 # Always use phoneme tokenizer for edit speech
                 instruction_tokens = self._get_text_tokens("Edit Speech")
-                field_tokens = self._get_phoneme_tokens(_text.replace("Edit Speech ", ""))
+                field_tokens = self._get_phoneme_tokens(_text[len("Edit Speech"):].strip())
                 field_tokens = instruction_tokens + field_tokens
-            elif _text.startswith("| Language"):
+            elif _text.startswith("TEXT CONTEXT:"):
                 # Speaker id conditioning
                 field_tokens = self._get_text_tokens(_text)
                 # pad field tokens to fixed length
-                _fixed_context_len = 20
-                field_tokens = field_tokens + [self.tokenizer.pad_id] * (_fixed_context_len - len(field_tokens))
+                # assert self.context_duration_min == self.context_duration_max, "TEXT CONTEXT only supports fixed context duration"
+                # To keep context length the same for audio or tex context
+                # _fixed_context_len = int(self.context_duration_min * self.codebook_fps)
+                field_tokens = field_tokens + [self.tokenizer.eos_id]
             else:
+                # if starts with Text to speech this
                 field_tokens = self._get_text_tokens(field_data.strip(" "))  # list of ids
         elif doc[f"{field}_type"] == 'SPEECH':
             dur = -1
@@ -877,29 +958,38 @@ class T5SpeechLMDataset(BasePromptLearningDataset):
             return [field_tokens]
         elif doc[f"{field}_type"] == 'CONTEXTANSWER':
             # Both Context and Answer are in the field
-            context_codec_path, answer_codec_path = field_data.split(";")
+            context_info, answer_codec_path = field_data.split(";")
             if self.codec_folder is not None:
-                context_codec_path = self.codec_folder / context_codec_path
+                context_codec_path = self.codec_folder / context_info
                 answer_codec_path = self.codec_folder / answer_codec_path
-            context_tokens = torch.load(context_codec_path).long()
-            answer_tokens = torch.load(answer_codec_path).long()
-            context_tokens[0] = (context_tokens[0] + self.speech_offset).long()
-            assert (
-                self.context_duration_min == self.context_duration_max
-            ), "CONTEXTANSWER only supports fixed context duration"
-            reference_codec_len = int(self.context_duration_min * self.codebook_fps)
-            assert (
-                context_tokens.shape[1] >= reference_codec_len
-            ), "CONTEXTANSWER context duration is less than min duration {} {} {}".format(
-                context_tokens.shape[1], reference_codec_len, context_codec_path
-            )
-            si = rng.randint(0, context_tokens.shape[1] - reference_codec_len)
-            context_tokens = context_tokens[:, si : si + reference_codec_len]
-            answer_tokens[0] = (answer_tokens[0] + self.speech_offset).long()
-            pad_tokens = torch.zeros(self.num_speech_codebooks, 1).long()
-            # padding between context and answer
-            field_tokens = torch.cat([context_tokens, pad_tokens, answer_tokens], dim=1)
-            field_tokens = [field_tokens]
+            if context_info.startswith("TEXT CONTEXT:"):
+                context_tokens = self._get_text_tokens(context_info.strip(" "))
+                # pad field tokens to fixed length
+                assert self.context_duration_min == self.context_duration_max, "TEXT CONTEXT only supports fixed context duration"
+                _fixed_context_len = int(self.context_duration_min * self.codebook_fps)
+                context_tokens = context_tokens + [self.tokenizer.pad_id] * (_fixed_context_len - len(context_tokens))
+
+                answer_tokens = torch.load(answer_codec_path).long()
+                answer_tokens[0] = (answer_tokens[0] + self.speech_offset).long()
+                field_tokens = context_tokens + [self.tokenizer.pad_id] + [answer_tokens]
+            else:
+                context_tokens = torch.load(context_codec_path).long()
+                context_tokens[0] = (context_tokens[0] + self.speech_offset).long()
+                assert self.context_duration_min == self.context_duration_max, "CONTEXTANSWER only supports fixed context duration"
+                reference_codec_len = int(self.context_duration_min * self.codebook_fps)
+                if context_tokens.shape[1] < reference_codec_len:
+                    # Repeat the context to match the reference_codec_len
+                    context_tokens = torch.cat([context_tokens] * (reference_codec_len // context_tokens.shape[1] + 1), dim=1)
+                assert context_tokens.shape[1] >= reference_codec_len, "CONTEXTANSWER context duration is less than min duration {} {} {}".format(context_tokens.shape[1], reference_codec_len, context_codec_path)
+                si = rng.randint(0, context_tokens.shape[1] - reference_codec_len)
+                context_tokens = context_tokens[:, si:si+reference_codec_len]
+
+                answer_tokens = torch.load(answer_codec_path).long()
+                answer_tokens[0] = (answer_tokens[0] + self.speech_offset).long()
+                pad_tokens = torch.zeros(self.num_speech_codebooks, 1).long()
+                # padding between context and answer
+                field_tokens = torch.cat([context_tokens, pad_tokens, answer_tokens], dim=1)
+                field_tokens = [field_tokens]
         elif doc[f"{field}_type"] == 'SEPARATIONCODECS':
             mixed_codec_path, reference_codec_paths = field_data.split(",")
             reference_codec_paths = reference_codec_paths.split(";")
@@ -933,7 +1023,7 @@ class T5SpeechLMDataset(BasePromptLearningDataset):
         return field_tokens
 
     def _insert_data_in_template(self, prompt_template_fields, doc, answer_field):
-        """Format the input example according to the template"""
+        """ Format the input example according to the template """
         out_dict = {}
         for field in prompt_template_fields:
             # discard the last one, {label} / {answer}
@@ -966,11 +1056,14 @@ class T5SpeechLMDataset(BasePromptLearningDataset):
         return build_position_ids(enc_input_p).contiguous()
 
     def collate_fn(self, batch):
-        """Prepares enc_input, dec_input, labels, loss_mask, enc_mask, dec_mask, position_ids, taskname_ids for global batch"""
+        """ Prepares enc_input, dec_input, labels, loss_mask, enc_mask, dec_mask, position_ids, taskname_ids for global batch """
 
         data_dict = self.pad_batch_and_build_loss_mask(batch)
 
-        position_ids = self.get_position_ids(data_dict['virtual_tokens'], data_dict['context_and_question_tokens'])
+        if self.encoder_type == "multi_transformer":
+            position_ids = [self.get_position_ids(data_dict['virtual_tokens'], data_dict['context_and_question_tokens'][0]), self.get_position_ids(data_dict['virtual_tokens'], data_dict['context_and_question_tokens'][1])]
+        else:
+            position_ids = self.get_position_ids(data_dict['virtual_tokens'], data_dict['context_and_question_tokens'])
 
         return (
             data_dict['virtual_tokens'],
@@ -991,7 +1084,7 @@ class T5SpeechLMDataset(BasePromptLearningDataset):
         )
 
     def pad_batch_and_build_loss_mask(self, batch):
-        """Pad enc_input, dec_input, labels in batch to max batch length while building loss_mask, enc_mask, and dec_mask"""
+        """ Pad enc_input, dec_input, labels in batch to max batch length while building loss_mask, enc_mask, and dec_mask """
         (
             taskname_ids,
             _,
@@ -1016,16 +1109,29 @@ class T5SpeechLMDataset(BasePromptLearningDataset):
             virtual_tokens_len = torch.stack(virtual_tokens_len)
         virtual_mask = get_mask_from_lengths(virtual_tokens_len)
 
-        max_context_and_question_tokens_len = (
-            max(context_and_question_tokens_len).item() if context_and_question_tokens_len is not None else 0
-        )
-        if isinstance(context_and_question_tokens_len, tuple):
-            context_and_question_tokens_len = torch.stack(context_and_question_tokens_len)
-        context_and_question_mask = get_mask_from_lengths(context_and_question_tokens_len)
+        if self.encoder_type == "multi_transformer":
+            max_context_len = max(_c[0] for _c in context_and_question_tokens_len) if context_and_question_tokens_len is not None else 0
+            max_question_len = max(_c[1] for _c in context_and_question_tokens_len) if context_and_question_tokens_len is not None else 0
+            max_context_and_question_tokens_len = [max_context_len, max_question_len]
+            context_len = torch.stack([_c[0] for _c in context_and_question_tokens_len])
+            question_len = torch.stack([_c[1] for _c in context_and_question_tokens_len])
+            context_mask = get_mask_from_lengths(context_len)
+            question_mask = get_mask_from_lengths(question_len)
+            context_and_question_tokens_len = [context_len, question_len]
+            context_and_question_mask = [context_mask, question_mask]
+            enc_mask = [torch.cat([virtual_mask, context_and_question_mask[0]], dim=1), torch.cat([virtual_mask, context_and_question_mask[1]], dim=1)]
+            # import ipdb; ipdb.set_trace()
+        else:
+            max_context_and_question_tokens_len = (
+                max(context_and_question_tokens_len).item() if context_and_question_tokens_len is not None else 0
+            )
+            if isinstance(context_and_question_tokens_len, tuple):
+                context_and_question_tokens_len = torch.stack(context_and_question_tokens_len)
+            context_and_question_mask = get_mask_from_lengths(context_and_question_tokens_len)
+            enc_mask = torch.cat([virtual_mask, context_and_question_mask], dim=1)
 
         max_dec_input_len = max(dec_input_len).item() if dec_input_len is not None else 0
         max_dec_labels_len = max(dec_labels_len).item() if dec_labels_len is not None else 0
-        enc_mask = torch.cat([virtual_mask, context_and_question_mask], dim=1)
 
         (
             virtual_tokens_list,
@@ -1075,17 +1181,41 @@ class T5SpeechLMDataset(BasePromptLearningDataset):
                 )
             )
 
-            context_tokens_padded = general_padding(
-                context_and_question_token,
-                context_and_question_token_len.item(),
-                max_context_and_question_tokens_len,
-                pad_value=self.tokenizer.pad_id,
-            )
-            if len(context_tokens_padded.shape) < 2:
-                context_tokens_padded = pad_text_to_speech_dims(
-                    context_tokens_padded, self.tokenizer.pad_id, self.num_speech_codebooks - 1
+            if self.encoder_type == "multi_transformer":
+                context_tokens_padded = general_padding(
+                    context_and_question_token[0],
+                    context_and_question_token_len[0].item(),
+                    max_context_and_question_tokens_len[0],
+                    pad_value=self.tokenizer.pad_id,
                 )
-            context_question_tokens_list.append(context_tokens_padded)
+                if len(context_tokens_padded.shape) < 2:
+                    context_tokens_padded = pad_text_to_speech_dims(
+                        context_tokens_padded, self.tokenizer.pad_id, self.num_speech_codebooks - 1
+                    )
+                question_tokens_padded = general_padding(
+                    context_and_question_token[1],
+                    context_and_question_token_len[1].item(),
+                    max_context_and_question_tokens_len[1],
+                    pad_value=self.tokenizer.pad_id,
+                )
+                if len(question_tokens_padded.shape) < 2:
+                    question_tokens_padded = pad_text_to_speech_dims(
+                        question_tokens_padded, self.tokenizer.pad_id, self.num_speech_codebooks - 1
+                    )
+                context_question_tokens_list.append([context_tokens_padded, question_tokens_padded])
+            else:
+                # This means context and questions are concatenated together
+                context_tokens_padded = general_padding(
+                    context_and_question_token,
+                    context_and_question_token_len.item(),
+                    max_context_and_question_tokens_len,
+                    pad_value=self.tokenizer.pad_id,
+                )
+                if len(context_tokens_padded.shape) < 2:
+                    context_tokens_padded = pad_text_to_speech_dims(
+                        context_tokens_padded, self.tokenizer.pad_id, self.num_speech_codebooks - 1
+                    )
+                context_question_tokens_list.append(context_tokens_padded)
 
             if max_dec_input_len > 0:
                 dec_input_padded = general_padding(
@@ -1122,36 +1252,55 @@ class T5SpeechLMDataset(BasePromptLearningDataset):
                 dec_labels_mask_list.append(loss_mask)
 
                 _p0 = max_dec_labels_len - dec_label_len
-                _p1 = (
-                    max_virtual_tokens_len
-                    + max_context_and_question_tokens_len
-                    - context_and_question_token_len
-                    - virtual_token_len
-                )
+                if self.encoder_type == "multi_transformer":
+                    _p1 = (
+                        max_virtual_tokens_len
+                        + max_context_and_question_tokens_len[1]
+                        - context_and_question_token_len[1]
+                        - virtual_token_len
+                    )
+                else:
+                    _p1 = (
+                        max_virtual_tokens_len
+                        + max_context_and_question_tokens_len
+                        - context_and_question_token_len
+                        - virtual_token_len
+                    )
 
                 cross_attention_prior_padded = torch.nn.functional.pad(
-                    cross_attention_prior,
-                    pad=(0, _p1, 0, _p0),
-                    mode="constant",
-                    value=1,
+                    cross_attention_prior, pad=(0, _p1, 0, _p0), mode="constant", value=1,
                 )
                 cross_attention_prior_list.append(cross_attention_prior_padded)
-                _start_of_text_id = virtual_token_len + context_token_len + 4
-                _end_of_text_id = _start_of_text_id + (
-                    context_and_question_token_len - context_token_len - 2 - 4
-                )  # -2 for some end tokens
+
+                if self.encoder_type == "multi_transformer":
+                    _start_of_text_id = virtual_token_len + 4
+                    _end_of_text_id = _start_of_text_id + (
+                        context_and_question_token_len[1] - 2 - 4
+                    )  # -2 for some end tokens
+                else:
+                    _start_of_text_id = virtual_token_len + context_token_len + 4
+                    _end_of_text_id = _start_of_text_id + (
+                        context_and_question_token_len - context_token_len - 2 - 4
+                    )  # -2 for some end tokens
                 text_limits.append(torch.tensor([_start_of_text_id.item(), _end_of_text_id.item()]))
                 lang_list.append(torch.tensor(lang))
 
         dec_labels_mask = torch.stack(dec_labels_mask_list) if len(dec_labels_mask_list) > 0 else None
         if dec_labels_mask is not None and self.context_conditioning == 'decoder':
             # Mask out context tokens from loss computation. +1 for bos/pad in the beginning
-            dec_labels_mask[:, : self.decoder_context_len + 1] = 0
+            dec_labels_mask[:,:self.decoder_context_len + 1] = 0
+
+        if self.encoder_type == "multi_transformer":
+            context_batch = torch.stack([c[0] for c in context_question_tokens_list])
+            question_batch = torch.stack([c[1] for c in context_question_tokens_list])
+            context_and_question_tokens = [context_batch, question_batch]
+        else:
+            context_and_question_tokens = torch.stack(context_question_tokens_list)
 
         data_dict = {
             "taskname_id": taskname_ids,
             "virtual_tokens": torch.stack(virtual_tokens_list),
-            "context_and_question_tokens": torch.stack(context_question_tokens_list),
+            "context_and_question_tokens": context_and_question_tokens,
             "enc_mask": enc_mask,
             "dec_input": torch.stack(dec_input_list) if len(dec_input_list) > 0 else None,
             "dec_input_mask": torch.stack(dec_input_mask_list) if len(dec_input_mask_list) > 0 else None,
@@ -1159,10 +1308,10 @@ class T5SpeechLMDataset(BasePromptLearningDataset):
             "dec_labels_mask": dec_labels_mask,
             "speech_mask": torch.stack(speech_mask_list) if len(speech_mask_list) > 0 else None,
             "context_and_question_tokens_lens": context_and_question_tokens_len,
-            "cross_attention_prior": (
-                torch.stack(cross_attention_prior_list) if len(cross_attention_prior_list) > 0 else None
-            ),
-            "text_limits": torch.stack(text_limits) if len(text_limits) > 0 else None,
+            "cross_attention_prior": torch.stack(cross_attention_prior_list)
+            if len(cross_attention_prior_list) > 0
+            else None,
+            "text_limits": torch.stack(text_limits) if len(text_limits) > 0 else None,  # tensor, valid range of answer transcripts without virtual/instruction/end tokens.
             "lang": torch.stack(lang_list),
             "question_texts": question_texts,
         }

@@ -273,7 +273,7 @@ class MegatronBaseSpeechLM(MegatronBaseModel, TextGeneration):
 
         if self.virtual_prompt_source == VirtualPromptSource.PROMPT_ENCODER:
             # taskname_embeddings = self.word_embeddings(taskname_ids)
-            batch_size, _ = input_ids.size()
+            batch_size, _ = taskname_ids.size()
             virtual_token_embeds = self.prompt_encoder(batch_size=batch_size, use_cached_reps=use_cached_reps)
         else:
             raise ValueError("invalid VirtualPromptSource.")

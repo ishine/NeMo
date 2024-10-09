@@ -18,11 +18,11 @@ from contextlib import nullcontext
 from importlib.metadata import version
 from typing import Any, Callable, Optional
 
+import packaging
 import torch
 import torch.nn as nn
 from einops import rearrange
 from omegaconf.listconfig import ListConfig
-from pkg_resources import packaging
 
 from nemo.collections.common.parts.adapter_modules import LinearAdapterConfig
 from nemo.collections.nlp.modules.common.megatron.adapters.parallel_adapters import (
@@ -46,6 +46,7 @@ from nemo.collections.nlp.modules.common.megatron.utils import ApexGuardDefaults
 from nemo.collections.nlp.parts import utils_funcs
 from nemo.core import adapter_mixins
 from nemo.utils import logging
+from nemo.utils.import_utils import safe_import_from
 
 try:
     from apex.normalization import MixedFusedRMSNorm
@@ -71,16 +72,13 @@ except (ImportError, ModuleNotFoundError):
 
     HAVE_MEGATRON_CORE = False
 
-try:
-    from transformer_engine.common import recipe
-    from transformer_engine.pytorch import TransformerLayer, fp8_autocast
-    from transformer_engine.pytorch.distributed import checkpoint as te_checkpoint
+recipe, HAVE_RECIPE = safe_import_from("transformer_engine.common", "recipe")
+TransformerLayer, HAVE_LAYER = safe_import_from("transformer_engine.pytorch", "TransformerLayer")
+fp8_autocast, HAVE_AUTOCAST = safe_import_from("transformer_engine.pytorch", "fp8_autocast")
+te_checkpoint, HAVE_CKPT = safe_import_from("transformer_engine.pytorch.distributed", "checkpoint")
+HAVE_TE = HAVE_RECIPE and HAVE_LAYER and HAVE_AUTOCAST and HAVE_CKPT
 
-    HAVE_TE = True
-
-except:
-    HAVE_TE = False
-
+if not HAVE_TE:
     # fake missing class
     class TransformerLayer(ApexGuardDefaults):
         def __init__(self):
@@ -1528,6 +1526,10 @@ class ParallelTransformer(MegatronModule):
         return_all_selfattention_probs=False,
         decoder_max_sequence_len=None,
         encoder_max_sequence_len=None,
+<<<<<<< HEAD
+=======
+        enc_output_to_layers=None,
+>>>>>>> origin/speechllm_tts_2410
     ):
         if return_all_crossattention_probs and return_all_selfattention_probs:
             raise NotImplementedError(
@@ -1562,7 +1564,12 @@ class ParallelTransformer(MegatronModule):
         It indicates if the current step in the forward pass is the first in a gradient accumulation cycle.
         If set, FP8 weights are cached and some minor optimizations are applied to fuse_wgrad_accumulation
         """
-        from apex.transformer.pipeline_parallel.utils import _GLOBAL_NUM_MICROBATCHES_CALCULATOR
+        try:
+            from megatron.core.num_microbatches_calculator import _GLOBAL_NUM_MICROBATCHES_CALCULATOR
+
+        except (ImportError, ModuleNotFoundError):
+            logging.warning("Megatron num_microbatches_calculator not found, using Apex version.")
+            from apex.transformer.pipeline_parallel.utils import _GLOBAL_NUM_MICROBATCHES_CALCULATOR
 
         num_micro_batches = getattr(_GLOBAL_NUM_MICROBATCHES_CALCULATOR, 'num_micro_batches', 1)
 
@@ -1623,9 +1630,28 @@ class ParallelTransformer(MegatronModule):
                             logging.warning("Returning embeddings states only!")
                             return hidden_states
 
+                    layer_to_encoder_num_mapping = {}
+                    if enc_output_to_layers is not None:
+                        assert len(enc_output_to_layers) == len(encoder_output)
+                        for encoder_idx in range(len(encoder_output)):
+                            for layer_idx in enc_output_to_layers[encoder_idx]:
+                                layer_to_encoder_num_mapping[layer_idx] = encoder_idx
+
                     for index in range(self.num_layers):
                         layer = self._get_layer(index)
                         past = None
+
+                        _encoder_output = encoder_output
+                        _enc_dec_attn_mask = enc_dec_attn_mask
+                        _cross_attention_relative_position_bias = cross_attention_relative_position_bias
+                        _encoder_max_sequence_len = encoder_max_sequence_len
+                        if index in layer_to_encoder_num_mapping:
+                            _encoder_output = encoder_output[layer_to_encoder_num_mapping[index]]
+                            _enc_dec_attn_mask = enc_dec_attn_mask[layer_to_encoder_num_mapping[index]]
+                            _cross_attention_relative_position_bias = cross_attention_relative_position_bias[layer_to_encoder_num_mapping[index]]
+                            if encoder_max_sequence_len is not None:
+                                _encoder_max_sequence_len = encoder_max_sequence_len[layer_to_encoder_num_mapping[index]]
+
 
                         if layer_past is not None:
                             past = layer_past[index]
@@ -1660,8 +1686,8 @@ class ParallelTransformer(MegatronModule):
                             hidden_states = layer(
                                 hidden_states,
                                 attention_mask,
-                                encoder_output=encoder_output,
-                                enc_dec_attn_mask=enc_dec_attn_mask,
+                                encoder_output=_encoder_output,
+                                enc_dec_attn_mask=_enc_dec_attn_mask,
                                 inference_params=self.inference_params,
                                 is_first_microbatch=is_first_microbatch,
                                 checkpoint_core_attention=checkpoint_core_attention,
@@ -1671,33 +1697,55 @@ class ParallelTransformer(MegatronModule):
                                 hidden_states, attention_probs = layer(
                                     hidden_states,
                                     attention_mask,
+<<<<<<< HEAD
                                     encoder_output=encoder_output,
                                     enc_dec_attn_mask=enc_dec_attn_mask,
+=======
+                                    encoder_output=_encoder_output,
+                                    enc_dec_attn_mask=_enc_dec_attn_mask,
+>>>>>>> origin/speechllm_tts_2410
                                     layer_past=past,
                                     set_inference_key_value_memory=set_inference_key_value_memory,
                                     inference_max_sequence_len=inference_max_sequence_len,
                                     rotary_pos_emb=rotary_pos_emb,
                                     self_attention_relative_position_bias=self_attention_relative_position_bias,
+<<<<<<< HEAD
                                     cross_attention_relative_position_bias=cross_attention_relative_position_bias,
                                     checkpoint_core_attention=checkpoint_core_attention,
                                     return_crossattention_scores=return_all_crossattention_probs,
                                     decoder_max_sequence_len=decoder_max_sequence_len,
                                     encoder_max_sequence_len=encoder_max_sequence_len,
+=======
+                                    cross_attention_relative_position_bias=_cross_attention_relative_position_bias,
+                                    checkpoint_core_attention=checkpoint_core_attention,
+                                    return_crossattention_scores=return_all_crossattention_probs,
+                                    decoder_max_sequence_len=decoder_max_sequence_len,
+                                    encoder_max_sequence_len=_encoder_max_sequence_len,
+>>>>>>> origin/speechllm_tts_2410
                                 )
                                 attention_probs_list.append(attention_probs)
                             elif layer.layer_type == LayerType.encoder and return_all_selfattention_probs:
                                 hidden_states, attention_probs = layer(
                                     hidden_states,
                                     attention_mask,
+<<<<<<< HEAD
                                     encoder_output=encoder_output,
                                     enc_dec_attn_mask=enc_dec_attn_mask,
+=======
+                                    encoder_output=_encoder_output,
+                                    enc_dec_attn_mask=_enc_dec_attn_mask,
+>>>>>>> origin/speechllm_tts_2410
                                     layer_past=past,
                                     get_key_value=get_key_value,
                                     set_inference_key_value_memory=set_inference_key_value_memory,
                                     inference_max_sequence_len=inference_max_sequence_len,
                                     rotary_pos_emb=rotary_pos_emb,
                                     self_attention_relative_position_bias=self_attention_relative_position_bias,
+<<<<<<< HEAD
                                     cross_attention_relative_position_bias=cross_attention_relative_position_bias,
+=======
+                                    cross_attention_relative_position_bias=_cross_attention_relative_position_bias,
+>>>>>>> origin/speechllm_tts_2410
                                     checkpoint_core_attention=checkpoint_core_attention,
                                     return_selfattention_scores=return_all_selfattention_probs,
                                 )
@@ -1706,18 +1754,30 @@ class ParallelTransformer(MegatronModule):
                                 hidden_states = layer(
                                     hidden_states,
                                     attention_mask,
+<<<<<<< HEAD
                                     encoder_output=encoder_output,
                                     enc_dec_attn_mask=enc_dec_attn_mask,
+=======
+                                    encoder_output=_encoder_output,
+                                    enc_dec_attn_mask=_enc_dec_attn_mask,
+>>>>>>> origin/speechllm_tts_2410
                                     layer_past=past,
                                     get_key_value=get_key_value,
                                     set_inference_key_value_memory=set_inference_key_value_memory,
                                     inference_max_sequence_len=inference_max_sequence_len,
                                     rotary_pos_emb=rotary_pos_emb,
                                     self_attention_relative_position_bias=self_attention_relative_position_bias,
+<<<<<<< HEAD
                                     cross_attention_relative_position_bias=cross_attention_relative_position_bias,
                                     checkpoint_core_attention=checkpoint_core_attention,
                                     decoder_max_sequence_len=decoder_max_sequence_len,
                                     encoder_max_sequence_len=encoder_max_sequence_len,
+=======
+                                    cross_attention_relative_position_bias=_cross_attention_relative_position_bias,
+                                    checkpoint_core_attention=checkpoint_core_attention,
+                                    decoder_max_sequence_len=decoder_max_sequence_len,
+                                    encoder_max_sequence_len=_encoder_max_sequence_len,
+>>>>>>> origin/speechllm_tts_2410
                                 )
 
                         if self.return_select_layer < 0:

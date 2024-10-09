@@ -68,10 +68,9 @@ except (ImportError, ModuleNotFoundError):
 
 try:
     # Flash Attention Triton
-    import pkg_resources
     from flash_attn.flash_attn_triton import flash_attn_func as flash_attn_func_triton
 
-except (ImportError, ModuleNotFoundError, pkg_resources.DistributionNotFound):
+except (ImportError, ModuleNotFoundError):
 
     flash_attn_func_triton = None
 
@@ -390,6 +389,7 @@ class ParallelAttention(MegatronModule, adapter_mixins.AdapterModuleMixin):
         # Pre-allocate memory for key-values for inference.
         # =================================================
         if set_inference_key_value_memory:
+            logging.debug(f"Initializing KV Cache.")
             assert inference_max_sequence_len and inference_max_sequence_len > 0
             self.inference_key_memory = self._allocate_memory(
                 inference_max_sequence_len, hidden_states.size(1), hidden_states.dtype, hidden_states.device
@@ -417,6 +417,7 @@ class ParallelAttention(MegatronModule, adapter_mixins.AdapterModuleMixin):
         # =====================
 
         if self.attention_type == AttnType.self_attn:
+            logging.debug(f"Start Self-Attention!")
             # Attention heads [sq, b, h] --> [sq, b, (np * 3 * hn)]
             mixed_x_layer, _ = self.query_key_value(hidden_states)
             if self.is_adapter_available():
@@ -439,6 +440,7 @@ class ParallelAttention(MegatronModule, adapter_mixins.AdapterModuleMixin):
                 mixed_x_layer, 3, contiguous_split_chunks=True
             )
         else:  # Else in cross_attention
+            # Attention heads [sk, b, h] --> [sk, b, (np * 2 * hn)]
             if (
                 inference_max_sequence_len is None
             ) or self.inference_current_sequence_len < inference_max_sequence_len:
@@ -510,7 +512,7 @@ class ParallelAttention(MegatronModule, adapter_mixins.AdapterModuleMixin):
         # If we are in cross attention (inference_current_sequence_len == inference_max_sequence_len == inference_key_memory.size(0))
         # We only need to cache this once
         if inference_max_sequence_len and self.inference_current_sequence_len < inference_max_sequence_len:
-            logging.debug(f"{self.inference_current_sequence_len}|{key_layer.shape}")
+            logging.debug(f"inference_current_sequence_len={self.inference_current_sequence_len} | key_layer.shape={key_layer.shape} | inference_key_memory={self.inference_key_memory.size()} | inference_value_memory={self.inference_value_memory.size()}")
             # Adjust the range variables.
             start = self.inference_current_sequence_len
             self.inference_current_sequence_len += key_layer.size(0)
@@ -892,7 +894,7 @@ class CoreAttention(MegatronModule):
             key_layer.size(0),
             query_layer.size(3),
         )
-        logging.debug(f"q:{query_layer.size()}\tk:{key_layer.size()}")
+        logging.debug(f"query_layer.shape={query_layer.size()}\tkey_layer.shape={key_layer.size()}")
 
         # ==================================================
         # Update attention mask for inference. [b, np, sq, sk]
@@ -943,14 +945,11 @@ class CoreAttention(MegatronModule):
         # context_layer [b, np, sq, hn]
         # ==================================================
         if not return_scores:
-            logging.debug(f"not returning scors: attn_fn: {self.attn_fn}, return_scores: {return_scores}")
+            logging.debug(
+                f"not returning scores: attn_type={self.attention_type} | attn_fn={self.attn_fn} | return_scores={return_scores}"
+            )
             context_layer = self.attn_fn(
-                query_layer,
-                key_layer,
-                value_layer,
-                attention_mask,
-                relative_position_bias,
-                inference_mode,
+                query_layer, key_layer, value_layer, attention_mask, relative_position_bias, inference_mode,
             )
         else:
             # SpeechLLM TTS modifications
@@ -973,12 +972,7 @@ class CoreAttention(MegatronModule):
                     f"attn_fn: {self.attn_fn}, return_scores: {return_scores}, relative_position_bias is not None: {relative_position_bias is not None}"
                 )
                 context_layer = self.attn_fn(
-                    query_layer,
-                    key_layer,
-                    value_layer,
-                    attention_mask,
-                    relative_position_bias,
-                    inference_mode,
+                    query_layer, key_layer, value_layer, attention_mask, relative_position_bias, inference_mode,
                 )
 
         if headscale_tensor is not None:
@@ -1032,6 +1026,9 @@ class CoreAttention(MegatronModule):
             attention_scores += attention_bias
 
         attention_probs = self.scale_mask_softmax(attention_scores, attention_mask)
+        logging.debug(f"attention_type={self.attention_type}")
+        logging.debug(f"attention_scores.shape={attention_scores.shape}")
+        logging.debug(f"attention_mask.shape={attention_mask.shape}")
         # This is actually dropping out entire tokens to attend to, which might
         # seem a bit unusual, but is taken from the original Transformer paper.
 

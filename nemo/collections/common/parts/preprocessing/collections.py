@@ -16,7 +16,8 @@ import collections
 import json
 import os
 from itertools import combinations
-from typing import Any, Dict, Iterable, List, Optional, Union
+from typing import Any, Callable, Dict, Iterable, List, Optional, Union
+
 import numpy as np
 import pandas as pd
 
@@ -331,6 +332,8 @@ class T5AudioText(_Collection):
         Args:
             manifests_files: Either single string file or list of such -
                 manifests to yield items from.
+            *args: Args to pass to `AudioText` constructor.
+            **kwargs: Kwargs to pass to `AudioText` constructor.
         """
 
         output_type = self.OUTPUT_TYPE
@@ -432,7 +435,7 @@ class T5AudioText(_Collection):
 class ASRAudioText(AudioText):
     """`AudioText` collector from asr structured json files."""
 
-    def __init__(self, manifests_files: Union[str, List[str]], *args, **kwargs):
+    def __init__(self, manifests_files: Union[str, List[str]], parse_func: Optional[Callable] = None, *args, **kwargs):
         """Parse lists of audio files, durations and transcripts texts.
 
         Args:
@@ -455,8 +458,9 @@ class ASRAudioText(AudioText):
             [],
             [],
         )
+
         speakers, orig_srs, token_labels, langs = [], [], [], []
-        for item in manifest.item_iter(manifests_files):
+        for item in manifest.item_iter(manifests_files, parse_func=parse_func):
             ids.append(item['id'])
             audio_files.append(item['audio_file'])
             durations.append(item['duration'])
