@@ -1526,10 +1526,7 @@ class ParallelTransformer(MegatronModule):
         return_all_selfattention_probs=False,
         decoder_max_sequence_len=None,
         encoder_max_sequence_len=None,
-<<<<<<< HEAD
-=======
         enc_output_to_layers=None,
->>>>>>> origin/speechllm_tts_2410
     ):
         if return_all_crossattention_probs and return_all_selfattention_probs:
             raise NotImplementedError(
@@ -1697,55 +1694,33 @@ class ParallelTransformer(MegatronModule):
                                 hidden_states, attention_probs = layer(
                                     hidden_states,
                                     attention_mask,
-<<<<<<< HEAD
-                                    encoder_output=encoder_output,
-                                    enc_dec_attn_mask=enc_dec_attn_mask,
-=======
                                     encoder_output=_encoder_output,
                                     enc_dec_attn_mask=_enc_dec_attn_mask,
->>>>>>> origin/speechllm_tts_2410
                                     layer_past=past,
                                     set_inference_key_value_memory=set_inference_key_value_memory,
                                     inference_max_sequence_len=inference_max_sequence_len,
                                     rotary_pos_emb=rotary_pos_emb,
                                     self_attention_relative_position_bias=self_attention_relative_position_bias,
-<<<<<<< HEAD
-                                    cross_attention_relative_position_bias=cross_attention_relative_position_bias,
-                                    checkpoint_core_attention=checkpoint_core_attention,
-                                    return_crossattention_scores=return_all_crossattention_probs,
-                                    decoder_max_sequence_len=decoder_max_sequence_len,
-                                    encoder_max_sequence_len=encoder_max_sequence_len,
-=======
                                     cross_attention_relative_position_bias=_cross_attention_relative_position_bias,
                                     checkpoint_core_attention=checkpoint_core_attention,
                                     return_crossattention_scores=return_all_crossattention_probs,
                                     decoder_max_sequence_len=decoder_max_sequence_len,
                                     encoder_max_sequence_len=_encoder_max_sequence_len,
->>>>>>> origin/speechllm_tts_2410
                                 )
                                 attention_probs_list.append(attention_probs)
                             elif layer.layer_type == LayerType.encoder and return_all_selfattention_probs:
                                 hidden_states, attention_probs = layer(
                                     hidden_states,
                                     attention_mask,
-<<<<<<< HEAD
-                                    encoder_output=encoder_output,
-                                    enc_dec_attn_mask=enc_dec_attn_mask,
-=======
                                     encoder_output=_encoder_output,
                                     enc_dec_attn_mask=_enc_dec_attn_mask,
->>>>>>> origin/speechllm_tts_2410
                                     layer_past=past,
                                     get_key_value=get_key_value,
                                     set_inference_key_value_memory=set_inference_key_value_memory,
                                     inference_max_sequence_len=inference_max_sequence_len,
                                     rotary_pos_emb=rotary_pos_emb,
                                     self_attention_relative_position_bias=self_attention_relative_position_bias,
-<<<<<<< HEAD
-                                    cross_attention_relative_position_bias=cross_attention_relative_position_bias,
-=======
                                     cross_attention_relative_position_bias=_cross_attention_relative_position_bias,
->>>>>>> origin/speechllm_tts_2410
                                     checkpoint_core_attention=checkpoint_core_attention,
                                     return_selfattention_scores=return_all_selfattention_probs,
                                 )
@@ -1754,13 +1729,8 @@ class ParallelTransformer(MegatronModule):
                                 hidden_states = layer(
                                     hidden_states,
                                     attention_mask,
-<<<<<<< HEAD
-                                    encoder_output=encoder_output,
-                                    enc_dec_attn_mask=enc_dec_attn_mask,
-=======
                                     encoder_output=_encoder_output,
                                     enc_dec_attn_mask=_enc_dec_attn_mask,
->>>>>>> origin/speechllm_tts_2410
                                     layer_past=past,
                                     get_key_value=get_key_value,
                                     set_inference_key_value_memory=set_inference_key_value_memory,
@@ -1772,17 +1742,10 @@ class ParallelTransformer(MegatronModule):
                                     checkpoint_core_attention=checkpoint_core_attention,
                                     decoder_max_sequence_len=decoder_max_sequence_len,
                                     encoder_max_sequence_len=encoder_max_sequence_len,
-=======
-                                    cross_attention_relative_position_bias=_cross_attention_relative_position_bias,
-                                    checkpoint_core_attention=checkpoint_core_attention,
-                                    decoder_max_sequence_len=decoder_max_sequence_len,
-                                    encoder_max_sequence_len=_encoder_max_sequence_len,
->>>>>>> origin/speechllm_tts_2410
                                 )
 
                         if self.return_select_layer < 0:
                             assert (
-                                parallel_state.get_pipeline_model_parallel_world_size() == 1
                             ), f"##{parallel_state.get_pipeline_model_parallel_world_size}"
                             if index == self.num_layers + self.return_select_layer:
                                 return hidden_states
