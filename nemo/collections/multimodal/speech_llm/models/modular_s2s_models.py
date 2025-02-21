@@ -748,6 +748,8 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
                     logging.info(f"Running ASR on segmented speech preds")
                     asr_batch_size = min(64, len(answer_wavs))
                     speech_answers_transcribed = asr_model.transcribe(answer_wavs, batch_size=asr_batch_size)
+                    if isinstance(speech_answers_transcribed, tuple):
+                        speech_answers_transcribed = speech_answers_transcribed[0]
                     speech_preds_transcribed = []
                     new_pred_wav = []
                     num_turns = []
@@ -770,6 +772,8 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
                     segmented_speech_preds_transcribed = asr_model.transcribe(
                         trans_new_pred_wav, batch_size=asr_batch_size
                     )
+                    if isinstance(segmented_speech_preds_transcribed, tuple):
+                        segmented_speech_preds_transcribed = segmented_speech_preds_transcribed[0]
                     prev_turns = 0
                     speech_preds_transcribed = []
                     for i, num_turn in enumerate(num_turns):
