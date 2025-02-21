@@ -720,13 +720,13 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
 
             with torch.no_grad():
                 logging.info(f"Decoding and saving audio")
-                pred_wavs = self.decode_and_save_wavs(
+                pred_wavs, start_end_time = self.decode_and_save_wavs(
                     codec_model,
                     deduplicated_outputs['speech_preds'],
                     os.path.join(output_dir, "wav", "pred"),
                     deduplicated_outputs['metadata'],
                 )
-                answer_wavs = self.decode_and_save_wavs(
+                answer_wavs, _ = self.decode_and_save_wavs(
                     codec_model,
                     deduplicated_outputs['speech_answers'],
                     os.path.join(output_dir, "wav", "answer"),
@@ -739,10 +739,43 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
             asr_model = self.additional_models['asr_model']
 
             with torch.no_grad():
-                logging.info(f"Running ASR on speech preds")
-                asr_batch_size = min(64, len(pred_wavs))
-                speech_preds_transcribed = asr_model.transcribe(pred_wavs, batch_size=asr_batch_size)
-                speech_answers_transcribed = asr_model.transcribe(answer_wavs, batch_size=asr_batch_size)
+                if not self.cfg.get('segment_asr_decode', False):
+                    logging.info(f"Running ASR on speech preds")
+                    asr_batch_size = min(64, len(pred_wavs))
+                    speech_preds_transcribed = asr_model.transcribe(pred_wavs, batch_size=asr_batch_size)
+                    speech_answers_transcribed = asr_model.transcribe(answer_wavs, batch_size=asr_batch_size)
+                else:
+                    logging.info(f"Running ASR on segmented speech preds")
+                    asr_batch_size = min(64, len(answer_wavs))
+                    speech_answers_transcribed = asr_model.transcribe(answer_wavs, batch_size=asr_batch_size)
+                    speech_preds_transcribed = []
+                    new_pred_wav = []
+                    num_turns = []
+                    max_length = 0
+                    trans_new_pred_wav = []
+                    for pred_wav, each_start_end_time in zip(pred_wavs, start_end_time):
+                        max_length = max(
+                            max_length,
+                            int(max([self.codec_sample_rate * (end - start) for start, end in each_start_end_time])),
+                        )
+                        for start, end in each_start_end_time:
+                            start = int(self.codec_sample_rate * start)
+                            end = int(self.codec_sample_rate * end)
+                            trans_new_pred_wav.append(pred_wav[start:end])
+                        num_turns.append(len(each_start_end_time))
+                    asr_batch_size = min(64, len(trans_new_pred_wav))
+                    segmented_speech_preds_transcribed = asr_model.transcribe(
+                        trans_new_pred_wav, batch_size=asr_batch_size
+                    )
+                    prev_turns = 0
+                    speech_preds_transcribed = []
+                    for i, num_turn in enumerate(num_turns):
+                        speech_preds_transcribed.append(
+                            "                ".join(
+                                [''] + segmented_speech_preds_transcribed[prev_turns : (prev_turns + num_turn)] + ['']
+                            )
+                        )
+                        prev_turns += num_turn
                 deduplicated_outputs['speech_preds_transcribed'] = speech_preds_transcribed
                 deduplicated_outputs['speech_answers_transcribed'] = speech_answers_transcribed
 
@@ -752,6 +785,7 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
             squim_mos_model = self.additional_models['squim_mos_model']
             codec_sample_rate = self.codec_sample_rate
 
+            # TODO: use trans_new_pred_wav here too
             with torch.no_grad():
                 logging.info(f"Running MOS prediction")
 
@@ -820,6 +854,7 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
         sample_rate = self.codec_sample_rate
         os.makedirs(wav_dir, exist_ok=True)
         wavs = []
+        start_end_time = []
         for codes, metadata in zip(codes_list, metadata_list):
             codes = torch.tensor(codes).to(codec_model.device).T
             codec_len = torch.Tensor([codes.shape[1]]).long().to(codec_model.device)
@@ -828,7 +863,19 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
             def replace_speech_code(codes, id):
                 return torch.where(codes == id, codes[:, :1], codes)
 
+            def get_index_of_code(codes, id):
+                # d, t
+                idxs = torch.where(codes[0] == id)[0]
+                return self.get_duration_by_steps(idxs)[0]
+
+            # get start time of each turn
+            start_times = get_index_of_code(codes, self.cfg.data.train_ds.speech_bos_id)
             codes = replace_speech_code(codes, self.cfg.data.train_ds.speech_bos_id)
+            # get end time of each turn
+            end_times = get_index_of_code(codes, self.cfg.data.train_ds.speech_eos_id)
+            end_times = end_times[: len(start_times)]
+            start_times = start_times[: len(end_times)]
+            start_end_time.append([(s, e) for s, e in zip(start_times, end_times)])
             codes = replace_speech_code(codes, self.cfg.data.train_ds.speech_eos_id)
             codes = replace_speech_code(codes, self.cfg.data.train_ds.speech_unk_id)
             codes = replace_speech_code(codes, self.cfg.data.train_ds.speech_pad_id)
@@ -843,7 +890,7 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
                 sample_rate,
             )
 
-        return wavs
+        return wavs, start_end_time
 
     def inference_epoch_end(self, outputs, mode, data_cfg):
         # Parent class will handle logging of the loss.
@@ -1217,11 +1264,11 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
         return out_codec_codes, out_codec_lens
 
     def get_duration_by_steps(self, steps):
-        codec_model_downsampling_factor = self.codec_model_downsampling_factor
+        codec_model_downsampling_factor = torch.tensor(self.codec_model_downsampling_factor)
         decoder_reduction_factor = self.cfg.get("decoder_reduction_factor", 1)
         codec_sample_rate = self.codec_sample_rate
         seconds = steps * codec_model_downsampling_factor / codec_sample_rate * decoder_reduction_factor
-        return seconds, int(seconds * codec_sample_rate)
+        return seconds, (seconds * codec_sample_rate).int()
 
     def get_step_from_audio_len(self, audio_len):
         decoder_reduction_factor = self.cfg.get("decoder_reduction_factor", 1)
