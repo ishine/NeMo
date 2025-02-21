@@ -754,6 +754,9 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
                     max_length = 0
                     trans_new_pred_wav = []
                     for pred_wav, each_start_end_time in zip(pred_wavs, start_end_time):
+                        if len(each_start_end_time) == 0:
+                            num_turns.append(0)
+                            continue
                         max_length = max(
                             max_length,
                             int(max([self.codec_sample_rate * (end - start) for start, end in each_start_end_time])),
