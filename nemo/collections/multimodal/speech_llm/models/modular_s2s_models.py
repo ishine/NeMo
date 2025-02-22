@@ -628,6 +628,7 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
             'inputs': inputs_text,  # [str]
             'metadata': metadata,  # [dict]
             'batch_idx': batch_idx,
+            'audio_signal': batch.get('audio_signal', None),
         }
 
         if mode == 'validation':
@@ -755,6 +756,9 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
                     num_turns = []
                     max_length = 0
                     trans_new_pred_wav = []
+                    for i in start_end_time:
+                        for start, end in i:
+                            print(end - start)
                     for pred_wav, each_start_end_time in zip(pred_wavs, start_end_time):
                         if len(each_start_end_time) == 0:
                             num_turns.append(0)
@@ -763,11 +767,14 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
                             max_length,
                             int(max([self.codec_sample_rate * (end - start) for start, end in each_start_end_time])),
                         )
+                        num_turn = 0
                         for start, end in each_start_end_time:
                             start = int(self.codec_sample_rate * start)
                             end = int(self.codec_sample_rate * end)
-                            trans_new_pred_wav.append(pred_wav[start:end])
-                        num_turns.append(len(each_start_end_time))
+                            if end > start:
+                                num_turn += 1
+                                trans_new_pred_wav.append(pred_wav[start:end])
+                        num_turns.append(num_turn)
                     asr_batch_size = min(64, len(trans_new_pred_wav))
                     segmented_speech_preds_transcribed = asr_model.transcribe(
                         trans_new_pred_wav, batch_size=asr_batch_size
@@ -794,8 +801,12 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
 
             # TODO: use trans_new_pred_wav here too
             with torch.no_grad():
-                logging.info(f"Running MOS prediction")
+                if not self.cfg.get('segment_asr_decode', False):
+                    logging.info(f"Running MOS prediction")
 
+                else:
+                    logging.info(f"Running MOS prediction on segmented speech preds")
+                    pred_wavs_resampled = trans_new_pred_wav
                 pred_wavs_resampled = [
                     torchaudio.functional.resample(wav.cuda(), codec_sample_rate, 16000).unsqueeze(0)
                     for wav in pred_wavs
@@ -804,11 +815,20 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
                     torchaudio.functional.resample(wav.cuda(), codec_sample_rate, 16000).unsqueeze(0)
                     for wav in answer_wavs
                 ]
-                squim_mos_scores = [
-                    squim_mos_model(pred_wav, answer_wav).cpu()
-                    for pred_wav, answer_wav in zip(pred_wavs_resampled, answer_wavs_resampled)
-                ]
+                if self.cfg.get('segment_asr_decode', False):
+                    squim_mos_scores = [
+                        squim_mos_model(pred_wav, answer_wav.reshape([1, -1]).cuda()).cpu()
+                        for pred_wav, answer_wav in zip(
+                            pred_wavs_resampled, list_outputs[0]['audio_signal'][:1] * len(pred_wavs_resampled)
+                        )
+                    ]
+                else:
+                    squim_mos_scores = [
+                        squim_mos_model(pred_wav, answer_wav).cpu()
+                        for pred_wav, answer_wav in zip(pred_wavs_resampled, answer_wavs_resampled)
+                    ]
                 deduplicated_outputs['mos_scores'] = squim_mos_scores
+
         return deduplicated_outputs
 
     def parse_decoder_outputs(
@@ -1697,8 +1717,7 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
     @classmethod
     def get_mos_models_and_configs(cls, cfg):
 
-        squim_mos_model = SQUIM_SUBJECTIVE.get_model()
-        return squim_mos_model
+        return SQUIM_SUBJECTIVE.get_model()
 
     def setup_optimizer_param_groups(self):
         super().setup_optimizer_param_groups()
