@@ -900,6 +900,14 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
             codes = replace_speech_code(codes, self.cfg.data.train_ds.speech_bos_id)
             # get end time of each turn
             end_times = get_index_of_code(codes, self.cfg.data.train_ds.speech_eos_id)
+            if len(start_times) == len(end_times) + 1:
+                end_times = torch.cat(
+                    [
+                        end_times,
+                        torch.full([1], self.get_duration_by_steps(codes.shape[1])[0], device=end_times.device),
+                    ],
+                    axis=0,
+                )
             end_times = end_times[: len(start_times)]
             start_times = start_times[: len(end_times)]
             start_end_time.append([(s, e) for s, e in zip(start_times, end_times)])
