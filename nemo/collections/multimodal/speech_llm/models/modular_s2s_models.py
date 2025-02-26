@@ -528,6 +528,8 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
         trainer.time_event_callback.logtimeevent.on_load_checkpoint_start()
         cls.post_restore_from_pretrained_models(cls, model, cfg)
         trainer.time_event_callback.logtimeevent.on_load_checkpoint_end()
+        # memory
+        cls.codec_model = cls.codec_model.to(torch.bfloat16)
         return model
 
     def load_state_dict(self, state_dict, strict: bool = True):
@@ -914,8 +916,9 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
             codes = replace_speech_code(codes, self.cfg.data.train_ds.speech_eos_id)
             codes = replace_speech_code(codes, self.cfg.data.train_ds.speech_unk_id)
             codes = replace_speech_code(codes, self.cfg.data.train_ds.speech_pad_id)
-            wav, _ = codec_model.decode(tokens=codes.unsqueeze(0), tokens_len=codec_len)
-            wav = wav[0]
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                wav, _ = codec_model.decode(tokens=codes.unsqueeze(0), tokens_len=codec_len)
+            wav = wav[0].float()
             wavs.append(wav)
             sf.write(
                 os.path.join(
@@ -1256,7 +1259,6 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
         super().__init__(cfg, trainer)
         if cfg.get('fixed_speaker_prompt', False):
             self.speaker_embeddings = nn.Embedding(16, cfg.hidden_size)
-        self.codec_model = self.codec_model.to(torch.bfloat16)
         self.model = self.model.to(torch.bfloat16)
 
     def _get_codec_embeddings(self, audio_signal, audio_signal_length):
