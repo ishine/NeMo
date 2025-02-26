@@ -1256,6 +1256,8 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
         super().__init__(cfg, trainer)
         if cfg.get('fixed_speaker_prompt', False):
             self.speaker_embeddings = nn.Embedding(16, cfg.hidden_size)
+        self.codec_model = self.codec_model.to(torch.bfloat16)
+        self.model = self.model.to(torch.bfloat16)
 
     def _get_codec_embeddings(self, audio_signal, audio_signal_length):
         """Get codec embeddings for the input audio signal."""
