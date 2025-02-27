@@ -217,6 +217,11 @@ class LhotseAudioQuestionAnswerDataset(torch.utils.data.Dataset):
         skipped_source = 0
         processed_cuts = []
         for cut in cuts:
+            cut.system_prompt = [
+                sup for sup in cut.supervisions if sup.duration == 0.0 and sup.start == 0.0
+            ]  # ignore system prompt
+            assert len(cut.system_prompt) <= 1, f"More than one system prompt in {cut}"
+            cut.system_prompt = cut.system_prompt[0].text if len(cut.system_prompt) > 0 else ''
             cut.supervisions = [sup for sup in cut.supervisions if sup.duration > 0.0]  # ignore system prompt
         for cut in cuts:
             if np.isclose(cut.target_audio.duration, cut.recording.duration):
@@ -505,6 +510,27 @@ class LhotseAudioQuestionAnswerDataset(torch.utils.data.Dataset):
             "speaker_ids": self.get_speaker_id(cuts),
         }
 
+        if hasattr(cut, "include_sys"):  # assume no within batch mixing
+            system_prompts_tensor = []
+            system_prompts_tensor_length = []
+            for cut in cuts:
+
+                source_text = self.text_processor._process_example(context="", output=cut.system_prompt)
+                # -1 to remove the eos token added by the text processor
+                source_text, source_text_length = torch.as_tensor(source_text["answer_ids"][:-1]), torch.as_tensor(
+                    len(source_text["answer_ids"]) - 1
+                )
+                system_prompts_tensor.append(source_text)
+                system_prompts_tensor_length.append(source_text_length)
+            system_prompts_tensor = collate_vectors(
+                system_prompts_tensor,
+                max_length=max(system_prompts_tensor_length),
+                padding_value=self.text_processor.eos_id,
+            ).long()
+            system_prompts_tensor_length = torch.tensor(system_prompts_tensor_length).long()
+            return_batch['system_prompts'] = system_prompts_tensor
+            return_batch['system_prompts_length'] = system_prompts_tensor_length
+
         return return_batch
 
     def get_speaker_id(self, cuts):
@@ -567,7 +593,6 @@ class LhotseAudioQuestionAnswerDataset(torch.utils.data.Dataset):
             raise ValueError(
                 "cut does not have target_audio. In duplex mode, recording keeps user channel and target_audio keeps agent channel"
             )
-
         text_pad_id = self.text_processor.pad_id
 
         def get_3d_empty_tensor(batch_size, length, text_fill_id, speech_fill_id):

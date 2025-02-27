@@ -1441,6 +1441,9 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
         encoder_input, labels, loss_mask, encoded, encoder_length = self.inject_speaker_prompt(
             audio_batch, encoder_input, labels, loss_mask, encoded, encoder_length
         )
+        encoder_input, labels, loss_mask, encoded, encoder_length = self.inject_sys_prompt(
+            audio_batch, encoder_input, labels, loss_mask, encoded, encoder_length
+        )
 
         attention_mask = self._create_attention_mask(encoder_input)
         if not hasattr(lm_embedding, 'transpose_batch_sequence') or lm_embedding.transpose_batch_sequence:
@@ -1457,6 +1460,23 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
             loss_mask = torch.cat([loss_mask[:, :1], loss_mask], dim=1)
             encoder_length += 1
             encoded = torch.cat([speaker_embeds, encoded], dim=1)
+        return encoder_input, labels, loss_mask, encoded, encoder_length
+
+    def inject_sys_prompt(self, audio_batch, encoder_input, labels, loss_mask, encoded, encoder_length):
+        if 'system_prompts' in audio_batch:
+            system_prompts = audio_batch['system_prompts']
+            system_prompts_length = audio_batch['system_prompts_length']
+            embeddings2use = self._get_text_embeddings(system_prompts, None)
+            # tmp simplified solution
+            encoder_input = torch.cat([embeddings2use.transpose(1, 0), encoder_input], dim=1)
+            labels = torch.cat(
+                [torch.full(list(system_prompts.shape) + [labels.shape[2]], 0, device=labels.device), labels], dim=1
+            )
+            loss_mask = torch.cat(
+                [torch.full(list(system_prompts.shape) + [labels.shape[2]], 0, device=labels.device), loss_mask], dim=1
+            )
+            encoder_length += system_prompts.shape[1]
+            encoded = torch.cat([embeddings2use.transpose(1, 0), encoded], dim=1)
         return encoder_input, labels, loss_mask, encoded, encoder_length
 
     def prepare_llm_input(self, audio_batch):
