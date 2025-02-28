@@ -507,7 +507,7 @@ class LhotseAudioQuestionAnswerDataset(torch.utils.data.Dataset):
             "target_texts_merge": target_texts_merge,  # used in prepare_llm_input
             "source_texts_merge": source_texts_merge,  # used in prepare_llm_input
             "contexts": target_texts_merge[:, :1],  # used in inference
-            "context_lengths": torch.ones_like(target_text_lengths),
+            "context_lengths": torch.ones_like(target_text_lengths),  # placeholder
             "target_texts": target_texts_merge,
             "target_text_lengths": target_text_lengths,
             "answers": target_texts_merge,
@@ -537,6 +537,8 @@ class LhotseAudioQuestionAnswerDataset(torch.utils.data.Dataset):
             system_prompts_tensor_length = torch.tensor(system_prompts_tensor_length).long()
             return_batch['system_prompts'] = system_prompts_tensor
             return_batch['system_prompts_length'] = system_prompts_tensor_length
+            return_batch['contexts'] = system_prompts_tensor
+            return_batch['context_lengths'] = system_prompts_tensor_length
 
         return return_batch
 
@@ -745,13 +747,19 @@ class LhotseAudioQuestionAnswerDataset(torch.utils.data.Dataset):
         import re
 
         # full text data goes here
-        from nemo.collections.common.data.lhotse.text_adapters import NeMoSFTExample, SourceTargetTextExample, NeMoMultimodalConversation
+        from nemo.collections.common.data.lhotse.text_adapters import (
+            NeMoMultimodalConversation,
+            NeMoSFTExample,
+            SourceTargetTextExample,
+        )
 
-        text_examples = cuts.filter(lambda c: isinstance(c, (SourceTargetTextExample, NeMoSFTExample, NeMoMultimodalConversation)))
+        text_examples = cuts.filter(
+            lambda c: isinstance(c, (SourceTargetTextExample, NeMoSFTExample, NeMoMultimodalConversation))
+        )
         if text_examples:
             # reformat text for duplex format
             if getattr(text_examples[0], "s2s_duplex", False):
-                use_random_padding = getattr(text_examples[0], "random_padding_vtblender", False) # 2.5 to 4
+                use_random_padding = getattr(text_examples[0], "random_padding_vtblender", False)  # 2.5 to 4
                 limit_max_seq_length = getattr(text_examples[0], "limit_max_seq_length", False)
                 pad_id = self.text_processor.pad_id
                 bos_id = self.text_processor.bos_id
@@ -765,15 +773,16 @@ class LhotseAudioQuestionAnswerDataset(torch.utils.data.Dataset):
                     input_ids_list = []
                     answer_ids_list = []
                     context_ids_list = []
-                    current_sample_len = 0 
+                    current_sample_len = 0
                     for turn in text_example.turns:
-                        cur_turn_tokens = self.text_processor._process_example(context="", output=turn.value)["answer_ids"][:-1] # -1 to remove the eos token added by the text processor
+                        cur_turn_tokens = self.text_processor._process_example(context="", output=turn.value)[
+                            "answer_ids"
+                        ][
+                            :-1
+                        ]  # -1 to remove the eos token added by the text processor
 
                         if not use_random_padding:
-                            pad_full_cur_input = np.full(
-                                shape=len(cur_turn_tokens)+3,
-                                fill_value=pad_id
-                            )
+                            pad_full_cur_input = np.full(shape=len(cur_turn_tokens) + 3, fill_value=pad_id)
                             # create a copy to fill the input
                             cur_input_text = np.copy(pad_full_cur_input)
 
@@ -785,19 +794,22 @@ class LhotseAudioQuestionAnswerDataset(torch.utils.data.Dataset):
                             # add extra padding to the text only channel input to emulate speech
                             number_tokens_with_random_padding = int(len(cur_turn_tokens) * random.uniform(1.7, 2.1))
                             pad_full_cur_input = np.full(
-                                shape=number_tokens_with_random_padding + 3,
-                                fill_value=pad_id
+                                shape=number_tokens_with_random_padding + 3, fill_value=pad_id
                             )
                             # create a copy to fill the input
                             cur_input_text = np.copy(pad_full_cur_input)
 
                             cur_input_text[0] = bos_id
                             cur_input_text[-2] = eos_id
-                            cur_input_text[1:len(cur_turn_tokens)+1] = cur_turn_tokens
+                            cur_input_text[1 : len(cur_turn_tokens) + 1] = cur_turn_tokens
 
                         current_sample_len += len(cur_turn_tokens)
                         # if it has already at least a full first turn conversation and reaches the limit_max_seq_length, ignore the rest
-                        if limit_max_seq_length and len(input_ids_list) >= 2  and (current_sample_len > limit_max_seq_length):
+                        if (
+                            limit_max_seq_length
+                            and len(input_ids_list) >= 2
+                            and (current_sample_len > limit_max_seq_length)
+                        ):
                             continue
 
                         if turn.role == "user":
@@ -828,8 +840,12 @@ class LhotseAudioQuestionAnswerDataset(torch.utils.data.Dataset):
                 pad_id = self.text_processor.pad_id
                 text_minibatch = dict(
                     text_input_ids=collate_vectors_lhotse([e.input_ids for e in text_examples], padding_value=pad_id),
-                    text_answer_ids=collate_vectors_lhotse([e.answer_ids for e in text_examples], padding_value=pad_id),
-                    text_context_ids=collate_vectors_lhotse([e.context_ids for e in text_examples], padding_value=pad_id),
+                    text_answer_ids=collate_vectors_lhotse(
+                        [e.answer_ids for e in text_examples], padding_value=pad_id
+                    ),
+                    text_context_ids=collate_vectors_lhotse(
+                        [e.context_ids for e in text_examples], padding_value=pad_id
+                    ),
                     text_loss_masks=collate_vectors_lhotse([e.mask for e in text_examples], padding_value=0),
                 )
                 text_minibatch["text_labels_ids"] = text_minibatch["text_input_ids"][:, 1:]
@@ -1020,7 +1036,6 @@ class LhotseAudioQuestionAnswerDataset(torch.utils.data.Dataset):
                 ],
                 axis=2,
             )
-
 
         def collate_and_pad(inputs):
             token_lengths = [len(seq) for seq in inputs]

@@ -386,6 +386,9 @@ class AudioToAudioGenerationStrategy(AudioToTextGenerationStrategy):
                 'loss_mask': None,
                 'speaker_ids': speaker_ids,
             }
+            if all(context_lengths != 1):  # has include_sys tag
+                batch['system_prompts'] = context_tokens
+                batch['system_prompts_length'] = context_lengths
         elif duplex_method == 'from_multiturn':
             batch = {
                 'audio_signal': audio_signal,
