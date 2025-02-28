@@ -33,6 +33,8 @@ from nemo.collections.nlp.parts.nlp_overrides import NLPSaveRestoreConnector
 from nemo.collections.nlp.parts.utils_funcs import get_last_rank
 from nemo.utils import AppState, logging, model_utils
 
+from nemo.collections.tts.modules import t5tts_transformer
+
 try:
     from megatron.core import InferenceParams, parallel_state, tensor_parallel
     from megatron.core.models.common.embeddings.language_model_embedding import LanguageModelEmbedding
@@ -125,13 +127,18 @@ class SumMultiEmbedding(LanguageModelEmbedding):
         )
 
 
+# TODO: Move the speech decoder to a new class called S2sMCoreGPTModelSpeechDecoder.  
+# This class should include self.model (from MCoreGPTModel) as the LLM backbone and  
+# self.speech_decoder_model as the speech decoder, derived from a new class with the projection heads.  
+# For v2, disable the vocab mapping and move the agent speech input from LLM-backbone to the speech decoder,
+# alleviating even more the LLMbackbone.
 class S2sMCoreGPTModel(MCoreGPTModel):
-
     def __init__(
         self,
         config: TransformerConfig,
         proj_head_dims: List[int],
         proj_head_loss_weights: List[float],
+        speech_decoder_parms: DictConfig = None,
         *args,
         **kwargs,
     ) -> None:
@@ -139,6 +146,7 @@ class S2sMCoreGPTModel(MCoreGPTModel):
         self.n_proj_heads = len(proj_head_dims)
         self.proj_head_dims = proj_head_dims
         self.proj_head_loss_weights = proj_head_loss_weights
+        self.speech_decoder_parms = dict(speech_decoder_parms) if speech_decoder_parms is not None else None
         self.output_layers = torch.nn.ModuleList(
             [
                 tensor_parallel.ColumnParallelLinear(
@@ -157,6 +165,18 @@ class S2sMCoreGPTModel(MCoreGPTModel):
                 for i in range(self.n_proj_heads)
             ]
         )
+        # ToDo: move the speech decoder to a new class
+        if self.speech_decoder_parms:
+            self.b_t_f_speech_decoder_input = self.speech_decoder_parms.pop("b_t_f_input", False)
+            self.speech_decoder_cfg_unconditional_prob = self.speech_decoder_parms.pop("cfg_unconditional_prob", None)
+            self.speech_decoder = t5tts_transformer.Transformer(**self.speech_decoder_parms)
+            self.text_dim_to_speech_proj = nn.Linear(config.hidden_size, self.speech_decoder_parms["d_model"])
+            self.speech_dim_to_text_proj = nn.Linear(self.speech_decoder_parms["d_model"], config.hidden_size)
+        else:
+            self.speech_decoder = None
+            self.text_dim_to_speech_proj = None
+            self.speech_dim_to_text_proj = None
+            self.b_t_f_speech_decoder_input = False
 
     # TODO rewrite setup_embeddings_and_output_layer to include self.output_layers
 
@@ -193,6 +213,7 @@ class S2sMCoreGPTModel(MCoreGPTModel):
         inference_params: InferenceParams = None,
         packed_seq_params: PackedSeqParams = None,
         extra_block_kwargs: dict = None,
+        speech_mask: Tensor = None,
     ) -> Tensor:
         """Forward function of the GPT Model This function passes the input tensors
         through the embedding layer, and then the decoeder and finally into the post
@@ -239,28 +260,47 @@ class S2sMCoreGPTModel(MCoreGPTModel):
             output_weight = self.shared_embedding_or_output_weight()
         else:
             output_weight = None
-        if input_ids is not None and input_ids.dim() == 2:  # pure text example
-            logits, _ = self.output_layer(
-                hidden_states, weight=output_weight[: self.vocab_size] if output_weight is not None else None
-            )
 
-            if labels is None:
-                # [s b h] => [b s h]
-                return logits.transpose(0, 1).contiguous()
+        # if using speech decoder - ToDo: move this to a new class called S2sMCoreGPTModelSpeechDecoder
+        if self.speech_decoder:
+            hidden_states_dec_input = hidden_states
+            if self.b_t_f_speech_decoder_input:
+                T, B, F = hidden_states_dec_input.size()
+                hidden_states_dec_input = hidden_states_dec_input.reshape(B, T, F) # .contiguous().transpose(0, 1) # from [T, B, F] to [B, T, F]
 
-            loss = self.compute_language_model_loss(labels, logits)
+            speech_decoder_input = self.text_dim_to_speech_proj(hidden_states_dec_input)
 
-            return loss
-        else:
+            # workaround for inference, because during inference speech_mask will be None
+            if speech_mask is None:
+                speech_mask = torch.ones((speech_decoder_input.size(0), speech_decoder_input.size(1))).to(speech_decoder_input.device)
+            else:
+                if not self.b_t_f_speech_decoder_input:
+                    speech_mask = speech_mask.transpose(0, 1)
+
+            if self.speech_decoder_cfg_unconditional_prob and self.training:
+                if torch.rand(1).item() < self.speech_decoder_cfg_unconditional_prob:
+                    # make the whole batch zeros to the unconditional model
+                    speech_decoder_input = torch.zeros_like(speech_decoder_input)
+                    speech_mask = torch.ones_like(speech_mask)
+
+            speech_hidden_states = self.speech_decoder(x=speech_decoder_input, x_mask=speech_mask)['output']
+            speech_hidden_states = self.speech_dim_to_text_proj(speech_hidden_states)# .transpose(0, 1) # from [B, T, F] to [T, B, F]
+
+            if self.b_t_f_speech_decoder_input:
+                speech_hidden_states = speech_hidden_states.reshape(T, B, F)#.contiguous().transpose(0, 1) # from [B, T, F] to [T, B, F]
+
             all_logits = []
             cur_dims = 0
             for i in range(self.n_proj_heads):
                 cur_output_weight = (
                     output_weight[cur_dims : cur_dims + self.proj_head_dims[i]] if output_weight is not None else None
                 )
-                all_logits.append(self.output_layers[i](hidden_states, weight=cur_output_weight)[0])
+                all_logits.append(self.output_layers[i](speech_hidden_states, weight=cur_output_weight)[0])
                 cur_dims += self.proj_head_dims[i]
+
             assert self.vocab_size == self.proj_head_dims[0]
+
+            # LLM head receives llm backbone output
             all_logits[0], _ = self.output_layer(
                 hidden_states, weight=output_weight[: self.vocab_size] if output_weight is not None else None
             )
@@ -280,6 +320,50 @@ class S2sMCoreGPTModel(MCoreGPTModel):
                 / sum(self.proj_head_loss_weights)
             )
             return tokens_loss
+        else:
+            # if text batch (VTBlender)
+            if input_ids is not None and input_ids.dim() == 2:  # pure text example
+                logits, _ = self.output_layer(
+                    hidden_states, weight=output_weight[: self.vocab_size] if output_weight is not None else None
+                )
+
+                if labels is None:
+                    # [s b h] => [b s h]
+                    return logits.transpose(0, 1).contiguous()
+
+                loss = self.compute_language_model_loss(labels, logits)
+
+                return loss
+            else:
+                # if speech batch without the speeech decoder
+                all_logits = []
+                cur_dims = 0
+                for i in range(self.n_proj_heads):
+                    cur_output_weight = (
+                        output_weight[cur_dims : cur_dims + self.proj_head_dims[i]] if output_weight is not None else None
+                    )
+                    all_logits.append(self.output_layers[i](hidden_states, weight=cur_output_weight)[0])
+                    cur_dims += self.proj_head_dims[i]
+                assert self.vocab_size == self.proj_head_dims[0]
+                all_logits[0], _ = self.output_layer(
+                    hidden_states, weight=output_weight[: self.vocab_size] if output_weight is not None else None
+                )
+
+                if labels is None:
+                    # [s b h] => [b s h]
+                    return_logits = [logits.transpose(0, 1).contiguous() for logits in all_logits]
+                    return torch.cat(return_logits, dim=-1)  # cat the last dim together to make other mcore code happy
+
+                tokens_loss = torch.stack(
+                    [self.compute_language_model_loss(labels[:, :, i], all_logits[i]) for i in range(self.n_proj_heads)],
+                    axis=2,
+                )
+                tokens_loss = (
+                    tokens_loss
+                    * torch.FloatTensor(self.proj_head_loss_weights).to(tokens_loss.device)
+                    / sum(self.proj_head_loss_weights)
+                )
+                return tokens_loss
 
 
 class S2sMCoreGPTModelDepth(S2sMCoreGPTModel):
@@ -464,6 +548,7 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
                 rotary_base=self.cfg.get('rotary_base', 10000),
                 proj_head_dims=self.proj_head_dims,
                 proj_head_loss_weights=self.proj_head_loss_weights,
+                speech_decoder_parms=self.cfg.get('speech_decoder_parms', None),
             )
 
             if self.cfg.get('scale_positional_embedding', False):
@@ -1256,6 +1341,7 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
         self.extract_codec_on_the_fly = cfg.get('extract_codec_on_the_fly', False)
         self.codec_model_downsampling_factor = cfg.get('codec_model_downsampling_factor', 1023.5)
         self.codec_sample_rate = cfg.data.train_ds.get("codec_sample_rate", 22050)
+        self.speech_decoder_parms = cfg.get('speech_decoder_parms', None)
         super().__init__(cfg, trainer)
         if cfg.get('fixed_speaker_prompt', False):
             self.speaker_embeddings = nn.Embedding(16, cfg.hidden_size)
@@ -1598,6 +1684,79 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
             new_encoder_length,
         )
 
+    def _gpt_forward(
+        self, input_ids, position_ids, encoder_input, attention_mask, labels, checkpoint_activations_all_layers, speech_mask=None
+    ):
+        """Forward pass of the GPT model."""
+        if self.megatron_amp_O2:
+            encoder_input = encoder_input.type(self.model.module.embedding.word_embeddings.weight.dtype)
+        if self.mcore_gpt:
+            output = self.model(
+                input_ids=input_ids,
+                position_ids=position_ids,
+                decoder_input=encoder_input,
+                attention_mask=attention_mask,
+                labels=labels,
+                speech_mask=speech_mask,
+            )
+        else:
+            output = self.model(
+                input_ids=input_ids,
+                position_ids=position_ids,
+                encoder_input=encoder_input,
+                attention_mask=attention_mask,
+                labels=labels,
+                checkpoint_activations_all_layers=checkpoint_activations_all_layers,
+                speech_mask=speech_mask,
+            )
+        return output
+
+    def forward(
+        self,
+        batch,
+        checkpoint_activations_all_layers,
+    ):
+        """
+        Forward pass of the model. We prepend audio embeddings to the instruction and label text tokens as the LLM input.
+        """
+        audio_batch = {k: v for k, v in batch.items() if not k.startswith("text_")}
+        text_batch = {k: v for k, v in batch.items() if k.startswith("text_")}
+
+        output, loss_mask = None, None
+
+        multimodal_output = {}
+        if 'audio_signal' in audio_batch:
+            # in this branch, limit_max_seq_length is handled in prepare_llm_input
+            encoder_input, attention_mask, labels, loss_mask, _ = self.prepare_llm_input(audio_batch)
+            # use last position of loss mask as speech mask
+            speech_mask = loss_mask[:, :, -1].reshape(loss_mask.size(0), loss_mask.size(1))
+            output = self._gpt_forward(
+                None, None, encoder_input, attention_mask, labels, checkpoint_activations_all_layers, speech_mask=speech_mask,
+            )
+            multimodal_output['audio_text'] = (output, loss_mask)
+
+        if text_batch:
+            input_ids = text_batch["text_input_ids"]
+            labels = text_batch["text_labels_ids"]
+            loss_mask = text_batch["text_loss_masks"]
+            limit_max_seq_length = self.cfg.get("limit_max_seq_length", None)
+            if limit_max_seq_length is not None and limit_max_seq_length < labels.shape[1] and self.training:
+                # import random
+                # start = random.randint(0, labels.shape[1] - limit_max_seq_length - 1)
+                labels = labels[:, :limit_max_seq_length]
+                input_ids = input_ids[:, :limit_max_seq_length]
+                loss_mask = loss_mask[:, :limit_max_seq_length]
+
+            attention_mask = self._create_attention_mask(input_ids)
+            output = self._gpt_forward(
+                input_ids, None, None, attention_mask, labels, checkpoint_activations_all_layers
+            )
+            multimodal_output['text'] = (output, loss_mask)
+        if not audio_batch and not text_batch:
+            raise ValueError("No input data found for the model.")
+
+        return multimodal_output
+
     @classmethod
     def get_codec_models_and_configs(cls, cfg):
         pretrained_codec_model = cfg.model.get("codec_model_path", None)
@@ -1649,6 +1808,16 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
                 param.requires_grad = True
             for param in self.model.decoder.final_layernorm.parameters():
                 param.requires_grad = True
+
+            if self.speech_decoder_parms:
+                for param in self.model.speech_decoder.parameters():
+                    param.requires_grad = True
+
+                for param in self.model.text_dim_to_speech_proj.parameters():
+                    param.requires_grad = True
+
+                for param in self.model.speech_dim_to_text_proj.parameters():
+                    param.requires_grad = True
 
 
 class S2sModularAudioGPTModelDepth(S2sModularAudioGPTModel):
