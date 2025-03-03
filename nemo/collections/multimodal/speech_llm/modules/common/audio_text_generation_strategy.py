@@ -408,7 +408,12 @@ class AudioToAudioGenerationStrategy(AudioToTextGenerationStrategy):
         encoder_input, _, labels, _, (self.encoded, _) = self.model.prepare_llm_input_duplex_from_multiturn(batch)
         self.attention_mask = self.model._create_attention_mask(encoder_input.transpose(0, 1))
         self.position_ids = build_position_ids(encoder_input.transpose(0, 1)[:, :, 0])
-        return labels, encoder_input, -context_lengths + 1
+
+        if all(context_lengths != 1):  # has include_sys tag
+            audio_feat_lens = torch.zeros_like(context_lengths)  # decode from context_lengths
+        else:
+            audio_feat_lens = -context_lengths + 1  # decode from step 0
+        return labels, encoder_input, audio_feat_lens
 
     def init_batch(
         self,

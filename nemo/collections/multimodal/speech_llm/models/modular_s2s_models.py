@@ -31,9 +31,8 @@ from nemo.collections.nlp.models.language_modeling.megatron_gpt_sft_model import
 from nemo.collections.nlp.modules.common.transformer import transformer_modules
 from nemo.collections.nlp.parts.nlp_overrides import NLPSaveRestoreConnector
 from nemo.collections.nlp.parts.utils_funcs import get_last_rank
-from nemo.utils import AppState, logging, model_utils
-
 from nemo.collections.tts.modules import t5tts_transformer
+from nemo.utils import AppState, logging, model_utils
 
 try:
     from megatron.core import InferenceParams, parallel_state, tensor_parallel
@@ -127,9 +126,9 @@ class SumMultiEmbedding(LanguageModelEmbedding):
         )
 
 
-# TODO: Move the speech decoder to a new class called S2sMCoreGPTModelSpeechDecoder.  
-# This class should include self.model (from MCoreGPTModel) as the LLM backbone and  
-# self.speech_decoder_model as the speech decoder, derived from a new class with the projection heads.  
+# TODO: Move the speech decoder to a new class called S2sMCoreGPTModelSpeechDecoder.
+# This class should include self.model (from MCoreGPTModel) as the LLM backbone and
+# self.speech_decoder_model as the speech decoder, derived from a new class with the projection heads.
 # For v2, disable the vocab mapping and move the agent speech input from LLM-backbone to the speech decoder,
 # alleviating even more the LLMbackbone.
 class S2sMCoreGPTModel(MCoreGPTModel):
@@ -266,13 +265,17 @@ class S2sMCoreGPTModel(MCoreGPTModel):
             hidden_states_dec_input = hidden_states
             if self.b_t_f_speech_decoder_input:
                 T, B, F = hidden_states_dec_input.size()
-                hidden_states_dec_input = hidden_states_dec_input.reshape(B, T, F) # .contiguous().transpose(0, 1) # from [T, B, F] to [B, T, F]
+                hidden_states_dec_input = hidden_states_dec_input.reshape(
+                    B, T, F
+                )  # .contiguous().transpose(0, 1) # from [T, B, F] to [B, T, F]
 
             speech_decoder_input = self.text_dim_to_speech_proj(hidden_states_dec_input)
 
             # workaround for inference, because during inference speech_mask will be None
             if speech_mask is None:
-                speech_mask = torch.ones((speech_decoder_input.size(0), speech_decoder_input.size(1))).to(speech_decoder_input.device)
+                speech_mask = torch.ones((speech_decoder_input.size(0), speech_decoder_input.size(1))).to(
+                    speech_decoder_input.device
+                )
             else:
                 if not self.b_t_f_speech_decoder_input:
                     speech_mask = speech_mask.transpose(0, 1)
@@ -284,10 +287,14 @@ class S2sMCoreGPTModel(MCoreGPTModel):
                     speech_mask = torch.ones_like(speech_mask)
 
             speech_hidden_states = self.speech_decoder(x=speech_decoder_input, x_mask=speech_mask)['output']
-            speech_hidden_states = self.speech_dim_to_text_proj(speech_hidden_states)# .transpose(0, 1) # from [B, T, F] to [T, B, F]
+            speech_hidden_states = self.speech_dim_to_text_proj(
+                speech_hidden_states
+            )  # .transpose(0, 1) # from [B, T, F] to [T, B, F]
 
             if self.b_t_f_speech_decoder_input:
-                speech_hidden_states = speech_hidden_states.reshape(T, B, F)#.contiguous().transpose(0, 1) # from [B, T, F] to [T, B, F]
+                speech_hidden_states = speech_hidden_states.reshape(
+                    T, B, F
+                )  # .contiguous().transpose(0, 1) # from [B, T, F] to [T, B, F]
 
             all_logits = []
             cur_dims = 0
@@ -340,7 +347,9 @@ class S2sMCoreGPTModel(MCoreGPTModel):
                 cur_dims = 0
                 for i in range(self.n_proj_heads):
                     cur_output_weight = (
-                        output_weight[cur_dims : cur_dims + self.proj_head_dims[i]] if output_weight is not None else None
+                        output_weight[cur_dims : cur_dims + self.proj_head_dims[i]]
+                        if output_weight is not None
+                        else None
                     )
                     all_logits.append(self.output_layers[i](hidden_states, weight=cur_output_weight)[0])
                     cur_dims += self.proj_head_dims[i]
@@ -355,7 +364,10 @@ class S2sMCoreGPTModel(MCoreGPTModel):
                     return torch.cat(return_logits, dim=-1)  # cat the last dim together to make other mcore code happy
 
                 tokens_loss = torch.stack(
-                    [self.compute_language_model_loss(labels[:, :, i], all_logits[i]) for i in range(self.n_proj_heads)],
+                    [
+                        self.compute_language_model_loss(labels[:, :, i], all_logits[i])
+                        for i in range(self.n_proj_heads)
+                    ],
                     axis=2,
                 )
                 tokens_loss = (
@@ -716,6 +728,8 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
             'metadata': metadata,  # [dict]
             'batch_idx': batch_idx,
             'audio_signal': batch.get('audio_signal', None),
+            'system_prompts': batch.get('system_prompts', None),
+            'system_prompts_length': batch.get('system_prompts_length', None),
         }
 
         if mode == 'validation':
@@ -1685,7 +1699,14 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
         )
 
     def _gpt_forward(
-        self, input_ids, position_ids, encoder_input, attention_mask, labels, checkpoint_activations_all_layers, speech_mask=None
+        self,
+        input_ids,
+        position_ids,
+        encoder_input,
+        attention_mask,
+        labels,
+        checkpoint_activations_all_layers,
+        speech_mask=None,
     ):
         """Forward pass of the GPT model."""
         if self.megatron_amp_O2:
@@ -1731,7 +1752,13 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
             # use last position of loss mask as speech mask
             speech_mask = loss_mask[:, :, -1].reshape(loss_mask.size(0), loss_mask.size(1))
             output = self._gpt_forward(
-                None, None, encoder_input, attention_mask, labels, checkpoint_activations_all_layers, speech_mask=speech_mask,
+                None,
+                None,
+                encoder_input,
+                attention_mask,
+                labels,
+                checkpoint_activations_all_layers,
+                speech_mask=speech_mask,
             )
             multimodal_output['audio_text'] = (output, loss_mask)
 
