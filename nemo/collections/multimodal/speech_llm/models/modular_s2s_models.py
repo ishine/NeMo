@@ -857,9 +857,6 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
                     num_turns = []
                     max_length = 0
                     trans_new_pred_wav = []
-                    for i in start_end_time:
-                        for start, end in i:
-                            print(end - start)
                     for pred_wav, each_start_end_time in zip(pred_wavs, start_end_time):
                         if len(each_start_end_time) == 0:
                             num_turns.append(0)
@@ -876,6 +873,11 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
                                 num_turn += 1
                                 trans_new_pred_wav.append(pred_wav[start:end])
                         num_turns.append(num_turn)
+                    if len(trans_new_pred_wav) < 1:
+                        trans_new_pred_wav = pred_wavs
+                        logging.info(
+                            f"Segmented speech preds are empty, using original speech preds. {deduplicated_outputs['metadata']}"
+                        )
                     asr_batch_size = min(64, len(trans_new_pred_wav))
                     segmented_speech_preds_transcribed = asr_model.transcribe(
                         trans_new_pred_wav, batch_size=asr_batch_size
@@ -1527,6 +1529,13 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
             pass
         else:
             raise ValueError(f"Unknown scale_loss_mask_by: {scale_loss_mask_by}")
+
+        encoder_input, labels, loss_mask, encoded, encoder_length = self.inject_speaker_prompt(
+            audio_batch, encoder_input, labels, loss_mask, encoded, encoder_length
+        )
+        encoder_input, labels, loss_mask, encoded, encoder_length = self.inject_sys_prompt(
+            audio_batch, encoder_input, labels, loss_mask, encoded, encoder_length
+        )
         limit_max_seq_length = self.cfg.get("limit_max_seq_length", None)
         if limit_max_seq_length is not None and limit_max_seq_length < labels.shape[1] and self.training:
             import random
@@ -1537,13 +1546,6 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
             loss_mask = loss_mask[:, start : start + limit_max_seq_length]
             encoder_length = torch.minimum(encoder_length, torch.tensor(limit_max_seq_length).long().cuda())
             encoded = encoded[:, start : start + limit_max_seq_length]
-
-        encoder_input, labels, loss_mask, encoded, encoder_length = self.inject_speaker_prompt(
-            audio_batch, encoder_input, labels, loss_mask, encoded, encoder_length
-        )
-        encoder_input, labels, loss_mask, encoded, encoder_length = self.inject_sys_prompt(
-            audio_batch, encoder_input, labels, loss_mask, encoded, encoder_length
-        )
 
         attention_mask = self._create_attention_mask(encoder_input)
         if not hasattr(lm_embedding, 'transpose_batch_sequence') or lm_embedding.transpose_batch_sequence:
