@@ -3,6 +3,7 @@ import itertools
 import json
 import math
 import os
+import random
 import re
 import tempfile
 from collections import OrderedDict
@@ -1416,6 +1417,8 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
         return torch.ceil(audio_len / self.codec_model_downsampling_factor / decoder_reduction_factor).int() - 1
 
     def prepare_llm_input_duplex_from_multiturn(self, audio_batch):
+        if random.random() < self.cfg.get('noise_prob', 0.0):
+            self.add_noise_to_batch(audio_batch, os.path.join(self.cfg.noise_path, 'train'), random.randint(15, 25))
         # real duplex data read from dataloader
         new_user_signal = audio_batch['audio_signal']
         new_user_signal_length = audio_batch['audio_signal_length']
@@ -1538,7 +1541,6 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
         )
         limit_max_seq_length = self.cfg.get("limit_max_seq_length", None)
         if limit_max_seq_length is not None and limit_max_seq_length < labels.shape[1] and self.training:
-            import random
 
             start = random.randint(0, labels.shape[1] - limit_max_seq_length - 1)
             encoder_input = encoder_input[:, start : start + limit_max_seq_length]
@@ -1580,6 +1582,45 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
             encoder_length += system_prompts.shape[1]
             encoded = torch.cat([embeddings2use.transpose(1, 0), encoded], dim=1)
         return encoder_input, labels, loss_mask, encoded, encoder_length
+
+    # TODO: move the following to dataloader
+    def add_noise_to_batch(self, batch, noise_folder, snr_db=20):
+        batch_audio = batch['audio_signal']  #  torch tensor，Shape: (batch_size, length)
+        batch_size, audio_length = batch_audio.shape
+
+        noise_files = [f for f in os.listdir(noise_folder) if f.endswith('.wav')]
+        if not noise_files:
+            raise ValueError(f"No noise files found in {noise_folder}")
+
+        for i in range(batch_size):
+
+            noise_path = os.path.join(noise_folder, random.choice(noise_files))
+            noise, sr = sf.read(noise_path, dtype='float32')
+
+            if len(noise.shape) > 1:
+                noise = np.mean(noise, axis=1)
+
+            if len(noise) < audio_length:
+
+                repeat_times = (audio_length // len(noise)) + 1
+                noise = np.tile(noise, repeat_times)[:audio_length]
+            else:
+
+                start_idx = random.randint(0, len(noise) - audio_length)
+                noise = noise[start_idx : start_idx + audio_length]
+
+            noise_tensor = torch.tensor(noise, dtype=batch_audio.dtype, device=batch_audio.device)
+
+            signal_power = torch.mean(batch_audio[i] ** 2) + 1e-8
+            noise_power = torch.mean(noise_tensor**2) + 1e-8
+
+            target_noise_power = signal_power / (10 ** (snr_db / 10))
+            scaling_factor = torch.sqrt(target_noise_power / noise_power)
+            noise_tensor = noise_tensor * scaling_factor
+
+            batch_audio[i] = batch_audio[i] + noise_tensor
+
+        batch['audio_signal'] = batch_audio
 
     def prepare_llm_input(self, audio_batch):
         # handle duplex and singleturn s2s
