@@ -994,6 +994,9 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
             def replace_speech_code(codes, id):
                 return torch.where(codes == id, codes[:, :1], codes)
 
+            def replace_speech_code_all(codes, id):
+                return torch.where(codes == torch.ones_like(codes[:, :1]) * id, codes[:, :1], codes)
+
             def get_index_of_code(codes, id):
                 # d, t
                 idxs = torch.where(codes[0] == id)[0]
@@ -1018,6 +1021,7 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
             codes = replace_speech_code(codes, self.cfg.data.train_ds.speech_eos_id)
             codes = replace_speech_code(codes, self.cfg.data.train_ds.speech_unk_id)
             codes = replace_speech_code(codes, self.cfg.data.train_ds.speech_pad_id)
+            codes = replace_speech_code_all(codes, 0)
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                 wav, _ = codec_model.decode(tokens=codes.unsqueeze(0), tokens_len=codec_len)
             wav = wav[0].float()
@@ -1570,6 +1574,12 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
         if 'system_prompts' in audio_batch:
             system_prompts = audio_batch['system_prompts']
             system_prompts_length = audio_batch['system_prompts_length']
+            limit_max_seq_length = self.cfg.get("limit_context_max_seq_length", None)
+            if limit_max_seq_length is not None and self.training:
+                system_prompts = system_prompts[:, :limit_max_seq_length]
+                system_prompts_length = torch.minimum(
+                    system_prompts_length, torch.tensor(limit_max_seq_length).long().cuda()
+                )
             embeddings2use = self._get_text_embeddings(system_prompts, None)
             # tmp simplified solution
             encoder_input = torch.cat([embeddings2use.transpose(1, 0), encoder_input], dim=1)
