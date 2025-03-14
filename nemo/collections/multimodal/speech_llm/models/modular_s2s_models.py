@@ -584,20 +584,25 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
         mos_model = cls.get_mos_models_and_configs(cfg)
         logging.info(f"Loaded MOS Model: {mos_model}")
 
-        if cfg.model.get('salm_model_path') is not None:
-            # this may only work for tp=1
-            # check scripts/nlp_language_modeling/merge_lora_weights/merge_salm.py on tp>1
-            salm_model_path = cfg.model.get('salm_model_path')
-            if '.nemo' in salm_model_path:
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    NLPSaveRestoreConnector._unpack_nemo_file(salm_model_path, tmpdir)
-                    salm_model_path = f"{tmpdir}/model_weights.ckpt"
-                    torch_state_dict = torch.load(salm_model_path)
-            else:
-                torch_state_dict = torch.load(salm_model_path)['state_dict']
-            model.setup_complete = False
-            model.load_state_dict(torch_state_dict, strict=False)
-            logging.info(f"loading from {cfg.model.get('salm_model_path')}: {torch_state_dict.keys()}")
+        def overwrite_state_dict_with_ckpt_path(ckpt_path, ignore=[], nemo_path='model_weights.ckpt'):
+            if ckpt_path is not None:
+                # this may only work for tp=1
+                # check scripts/nlp_language_modeling/merge_lora_weights/merge_salm.py on tp>1
+                salm_model_path = ckpt_path
+                if '.nemo' in salm_model_path:
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        NLPSaveRestoreConnector._unpack_nemo_file(salm_model_path, tmpdir)
+                        salm_model_path = f"{tmpdir}/{nemo_path}"
+                        torch_state_dict = torch.load(salm_model_path)
+                else:
+                    torch_state_dict = torch.load(salm_model_path)['state_dict']
+                torch_state_dict = {k: v for k, v in torch_state_dict.items() if not any([i in k for i in ignore])}
+                model.setup_complete = False
+                model.load_state_dict(torch_state_dict, strict=False)
+                logging.info(f"loading from {ckpt_path}: {torch_state_dict.keys()}")
+
+        overwrite_state_dict_with_ckpt_path(cfg.model.get('salm_model_path'))
+        overwrite_state_dict_with_ckpt_path(cfg.model.get('s2s_salm_model_path'), ignore=['model.'])
 
         model.padded_vocab_size = cfg.model.s2s_vocab_size
 
@@ -1445,7 +1450,9 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
         )  # list, list
 
         answer_codecs_lens = torch.Tensor(answer_codecs_lens).long().cuda()
-        assert all(torch.isclose(answer_codecs_lens, encoded_len, atol=3))
+        assert all(
+            torch.isclose(answer_codecs_lens, encoded_len, atol=3)
+        ), f"answer_codecs_lens: {answer_codecs_lens}, encoded_len: {encoded_len}, sample_ids: {audio_batch['sample_ids']}"
         encoded_len = answer_codecs_lens
         all_channels = []
         for i, answer_codec in enumerate(answer_codecs):
