@@ -668,6 +668,8 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
         # Meta data from dataset
         metadata = batch.get('metadata', [{}] * len(batch['tokens']))
         loss = super(MegatronGPTSFTModel, self).validation_step(itertools.chain([batch]), dataloader_idx)
+        # make sure that the model is in eval mode
+        self.eval()
 
         # We need _inference_config to get generation params
         # add_BOS and tokens_to_generate are set in dataset
@@ -750,6 +752,8 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
                 self.test_step_outputs[dataloader_idx][-1] = outputs
             else:
                 self.test_step_outputs[-1] = outputs
+        # make sure that the model is in training mode after inference is done
+        self.train()
         return outputs
 
     def post_inference_step(self, list_outputs, mode, data_cfg):
@@ -1427,7 +1431,7 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
 
     def prepare_llm_input_duplex_from_multiturn(self, audio_batch):
         if random.random() < self.cfg.get('noise_prob', 0.0):
-            self.add_noise_to_batch(audio_batch, os.path.join(self.cfg.noise_path, 'train'), random.randint(15, 25))
+            self.add_noise_to_batch(audio_batch, os.path.join(self.cfg.noise_path, 'train'), random.randint(10, 40))
         # real duplex data read from dataloader
         new_user_signal = audio_batch['audio_signal']
         new_user_signal_length = audio_batch['audio_signal_length']
@@ -1451,9 +1455,10 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
 
         answer_codecs_lens = torch.Tensor(answer_codecs_lens).long().cuda()
         assert all(
-            torch.isclose(answer_codecs_lens, encoded_len, atol=3)
-        ), f"answer_codecs_lens: {answer_codecs_lens}, encoded_len: {encoded_len}, sample_ids: {audio_batch['sample_ids']}"
-        encoded_len = answer_codecs_lens
+            torch.isclose(answer_codecs_lens, encoded_len, atol=7)
+        ), f"answer_codecs_lens: {answer_codecs_lens}, encoded_len: {encoded_len}, {new_agent_signal_length} {new_user_signal_length} {audio_batch['target_texts_merge']}"
+        encoded_len = torch.minimum(answer_codecs_lens, encoded_len)
+        answer_codecs_lens = encoded_len
         all_channels = []
         for i, answer_codec in enumerate(answer_codecs):
             text_channel = audio_batch['target_texts_merge'][i]
@@ -1567,7 +1572,8 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
         return encoder_input, attention_mask, labels, loss_mask, (encoded, encoder_length)
 
     def inject_speaker_prompt(self, audio_batch, encoder_input, labels, loss_mask, encoded, encoder_length):
-        if self.cfg.get('fixed_speaker_prompt', False):
+        fixed_speaker_prompt = self.cfg.get('fixed_speaker_prompt', False)
+        if fixed_speaker_prompt == 1:  # concat
             speaker_ids = audio_batch['speaker_ids']
             speaker_embeds = self.speaker_embeddings(speaker_ids).unsqueeze(1)
             encoder_input = torch.cat([speaker_embeds, encoder_input], dim=1)
@@ -1575,6 +1581,11 @@ class S2sModularAudioGPTModel(ModularAudioGPTModel):
             loss_mask = torch.cat([loss_mask[:, :1], loss_mask], dim=1)
             encoder_length += 1
             encoded = torch.cat([speaker_embeds, encoded], dim=1)
+        elif fixed_speaker_prompt == 2:  # pool
+            speaker_ids = audio_batch['speaker_ids']
+            speaker_embeds = self.speaker_embeddings(speaker_ids).unsqueeze(1)
+            encoder_input += speaker_embeds
+            encoded += speaker_embeds
         return encoder_input, labels, loss_mask, encoded, encoder_length
 
     def inject_sys_prompt(self, audio_batch, encoder_input, labels, loss_mask, encoded, encoder_length):

@@ -813,6 +813,10 @@ def s2s_sample_sequence_batch(
                 # import pdb; pdb.set_trace()
 
                 prev = [get_prev(logits_i, started, temperature, extra) for logits_i in logits]
+                if extra.get('greedy_on_text', False):
+                    prev[0] = get_prev(
+                        logits[0], started, temperature, {'greedy': True}
+                    )  # allow greedy on text and sampling on speech
                 prev = torch.stack(prev, dim=1)
                 started_expand = started.unsqueeze(1).expand(-1, prev.size(1))
                 new_tokens = switch(tokens[:, context_length], prev, started_expand)

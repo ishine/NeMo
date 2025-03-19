@@ -224,8 +224,13 @@ class LhotseAudioQuestionAnswerDataset(torch.utils.data.Dataset):
             cut.system_prompt = cut.system_prompt[0].text if len(cut.system_prompt) > 0 else ''
             cut.supervisions = [sup for sup in cut.supervisions if sup.duration > 0.0]  # ignore system prompt
 
+        def get_duration_from_sample(field):
+            return field.num_samples / field.sampling_rate
+
         for cut in cuts:
-            if np.isclose(cut.target_audio.duration, cut.recording.duration):
+            if np.isclose(cut.target_audio.duration, cut.recording.duration) and np.isclose(
+                get_duration_from_sample(cut.target_audio), get_duration_from_sample(cut.recording)
+            ):
                 is_valid = True
             else:
                 is_valid = False
