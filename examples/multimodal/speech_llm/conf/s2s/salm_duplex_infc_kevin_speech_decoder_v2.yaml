@@ -30,7 +30,8 @@ trainer:
   gradient_clip_val: 1.0
   accumulate_grad_batches: 1
 
-model_target: nemo.collections.multimodal.speech_llm.models.modular_s2s_models.S2sModularAudioGPTModel
+# model_target: nemo.collections.multimodal.speech_llm.models.modular_s2s_models.S2sModularAudioGPTModel
+model_target: nemo.collections.multimodal.speech_llm.models.duplex_s2s_speech_decoder.S2sModularAudioGPTModelSpeechDecoder
 
 exp_manager:
   # explicit_log_dir: null
@@ -84,14 +85,15 @@ model:
     kernel_size: 3
     p_dropout: 0.1
     p_dropout_out: 0.0
-    has_xattn: true
+    has_xattn: false
     xa_d_memory: 768
     xa_n_heads: 12
     is_causal: true
     apply_norm_to_cond: true
     apply_norm_out: true
-    max_length_causal_mask: 2048
-    use_learnable_pos_emb: true
+    max_length_causal_mask: 5000
+    use_learnable_pos_emb: false
+    cond_on_prev_audio_tokens: true
 
   seed: 1234
   tensor_model_parallel_size: 1 # intra-layer model parallelism

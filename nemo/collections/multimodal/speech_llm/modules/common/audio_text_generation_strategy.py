@@ -317,15 +317,30 @@ class AudioToAudioGenerationStrategy(AudioToTextGenerationStrategy):
         compute_attention_mask: bool,
     ) -> Tuple[List[torch.Tensor], List[int]]:
         if step == 0:
+            # reset kv cache
             set_inference_key_value_memory = True
             tokens2use = tokens[:, :curr_context_length]
             positions2use = self.position_ids[:, :curr_context_length]
             embeddings2use = input_embeddings[:curr_context_length]
+            # create a dummy tensor with unk id that is used during the training for pad the first step
+            if getattr(self.model.cfg, 'speech_delay', False):
+                # input_embeddings.size(1) because embeddings2use initially is T, B, F and audiotokens2use need to be B, T, F
+                audiotokens2use = torch.ones(input_embeddings.size(1), 1, len(self.model.cfg.proj_head_dims)-1).int().to(embeddings2use.device)
+                audiotokens2use[:, :] = self.model.cfg.data.train_ds.speech_unk_id
+            else:
+                raise ValueError(f"speech_delay need to be used, otherwise the first token will not be speech_unk_id, it will be a random token!!")
         else:
             set_inference_key_value_memory = False
             # handle positions2use and tokens2use differently
-            tokens2use = tokens[:, curr_context_length - 1].view(micro_batch_size, 1, -1)
             positions2use = self.position_ids[:, curr_context_length - 1].view(micro_batch_size, 1, -1)
+            # update it to support cond_llm_backbone_on_speech_tokens parameter 
+            if getattr(self.model.cfg, 'cond_llm_backbone_on_speech_tokens', True):
+                tokens2use = tokens[:, curr_context_length - 1].view(micro_batch_size, 1, -1)
+            else:
+                tokens2use = tokens[:, curr_context_length - 1].view(micro_batch_size, 1, -1)[:, :, 0]
+
+            audiotokens2use = tokens[:, curr_context_length - 1].view(micro_batch_size, 1, -1)[:, :, 1:]
+
             # embedding offset and sum is handled inside
             embeddings2use = self.model._get_text_embeddings(tokens2use, positions2use)
             started = context_lengths <= curr_context_length
@@ -343,7 +358,7 @@ class AudioToAudioGenerationStrategy(AudioToTextGenerationStrategy):
             [set_inference_key_value_memory] * micro_batch_size, device=torch.cuda.current_device()
         )
         len_array = torch.tensor([maxlen] * micro_batch_size, device=torch.cuda.current_device())
-        batch = [tokens2use, embeddings2use, self.attention_mask, positions2use, setkey_value_array, len_array]
+        batch = [tokens2use, audiotokens2use, embeddings2use, self.attention_mask, positions2use, setkey_value_array, len_array]
         tensor_shape = [tokens2use.shape[1], micro_batch_size, self.model.cfg.hidden_size]
         return batch, tensor_shape
 
@@ -405,7 +420,8 @@ class AudioToAudioGenerationStrategy(AudioToTextGenerationStrategy):
         else:
             raise ValueError(f"duplex_method {duplex_method} not supported")
 
-        encoder_input, _, labels, _, (self.encoded, _) = self.model.prepare_llm_input_duplex_from_multiturn(batch)
+        encoder_input, _, labels, _, extra_outputs = self.model.prepare_llm_input_duplex_from_multiturn(batch)
+        self.encoded = extra_outputs[0]
         self.attention_mask = self.model._create_attention_mask(encoder_input.transpose(0, 1))
         self.position_ids = build_position_ids(encoder_input.transpose(0, 1)[:, :, 0])
 
@@ -443,10 +459,11 @@ def model_inference_strategy_dispatcher(model, **args):
         ModularAudioGPTModel,
     )
     from nemo.collections.multimodal.speech_llm.models.modular_s2s_models import S2sModularAudioGPTModel
+    from nemo.collections.multimodal.speech_llm.models.duplex_s2s_speech_decoder import S2sModularAudioGPTModelSpeechDecoder
 
     if isinstance(model, CrossAttendModularAudioGPTModel):
         return CrossAttendAudioToTextGenerationStrategy(model, **args)
-    elif isinstance(model, S2sModularAudioGPTModel):
+    elif isinstance(model, S2sModularAudioGPTModel) or isinstance(model, S2sModularAudioGPTModelSpeechDecoder):
         return AudioToAudioGenerationStrategy(model, **args)
     elif isinstance(model, ModularAudioGPTModel):
         return AudioToTextGenerationStrategy(model, **args)

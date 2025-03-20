@@ -30,7 +30,7 @@ trainer:
   gradient_clip_val: 1.0
   accumulate_grad_batches: 1
 
-model_target: nemo.collections.multimodal.speech_llm.models.modular_s2s_models.S2sModularAudioGPTModel
+model_target: nemo.collections.multimodal.speech_llm.models.duplex_s2s_speech_decoder.S2sModularAudioGPTModelSpeechDecoder
 
 exp_manager:
   # explicit_log_dir: null
@@ -74,6 +74,8 @@ model:
   proj_head_dims: [32000, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048]
   s2s_vocab_size: 48384 # This should be equal to the proj_head_dims[0] + decoder_reduction_factor * sum(proj_head_dims[1:])
   proj_head_loss_weights: [1, 1, 1, 1, 1, 1, 1, 1, 1]
+  cond_llm_backbone_on_speech_tokens: false
+
   speech_decoder_parms:
     n_layers: 12
     d_model: 768
@@ -88,8 +90,9 @@ model:
     is_causal: true
     apply_norm_to_cond: true
     apply_norm_out: true
-    max_length_causal_mask: 2048
+    max_length_causal_mask: 5000
     use_learnable_pos_emb: false
+    cond_on_prev_audio_tokens: true
 
   decoder_reduction_factor: 1
   norm_val_metrics: true

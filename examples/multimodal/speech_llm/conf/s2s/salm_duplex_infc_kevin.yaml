@@ -75,6 +75,7 @@ model:
   s2s_vocab_size: 48384 # This should be equal to the proj_head_dims[0] + decoder_reduction_factor * sum(proj_head_dims[1:])
   proj_head_loss_weights: [1, 1, 1, 1, 1, 1, 1, 1, 1]
   decoder_reduction_factor: 1
+  norm_val_metrics: true
 
   seed: 1234
   tensor_model_parallel_size: 1 # intra-layer model parallelism
@@ -2093,7 +2094,8 @@ model:
       use_lhotse: True
       force_map_dataset: True
       # names: ['zhehuai_demo']
-      names: ['llamaqa','ultrachat_v2', 'alpaca_dev', 'tqa_context40', 'squadv2_v2_test', 'roleplay1', 'topic']  
+      # names: ['llamaqa','ultrachat_v2', 'alpaca_dev', 'tqa_context40', 'squadv2_v2_test', 'roleplay1', 'topic']
+      names: ['ultrachat_v2', 'alpaca_dev', 'tqa_context40', 'squadv2_v2_test', 'roleplay1', 'topic'] 
       # names: ['alpaca_dev']
       input_cfg:
         - type: group
@@ -2101,10 +2103,10 @@ model:
           tags:
             lang: en
           input_cfg:
-            - type: lhotse_shar
-              shar_path: /lustre/fsw/portfolios/llmservice/users/cchen1/data/inference_llama
-              tags:
-                s2s_duplex: True
+            # - type: lhotse_shar
+            #   shar_path: /lustre/fsw/portfolios/llmservice/users/cchen1/data/inference_llama
+            #   tags:
+            #     s2s_duplex: True
             - type: lhotse_shar
               shar_path: /lustre/fsw/portfolios/llmservice/users/kevinhu/duplex_inf/ultrachat_v2/shar_duplex/manifest_000200/
               tags:
@@ -2199,6 +2201,9 @@ model:
           average: null
           num_classes: null
         - name: "asr-wer"
+          average: null
+          num_classes: null
+        - name: "tts-wer"
           average: null
           num_classes: null
         - name: "mos"
