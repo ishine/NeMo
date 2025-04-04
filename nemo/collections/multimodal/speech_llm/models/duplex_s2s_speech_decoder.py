@@ -5,15 +5,16 @@ import math
 import os
 import random
 import re
+import string
 import tempfile
 from collections import OrderedDict
 from typing import List, Optional, Union
 
 import hydra
+import librosa
 import numpy as np
 import sacrebleu
 import soundfile as sf
-import string
 import torch
 import torchaudio
 from omegaconf import DictConfig, OmegaConf
@@ -23,22 +24,21 @@ from pytorch_lightning.utilities import rank_zero_only
 from torch import Tensor, nn
 from torch.nn.utils.rnn import pad_sequence
 from torchaudio.pipelines import SQUIM_SUBJECTIVE
-from nemo.core.classes.module import NeuralModule
 
-from nemo.collections.multimodal.speech_llm.modules.common.audio_text_generation_utils import generate
-from nemo.collections.nlp.modules.common.text_generation_utils import get_computeprob_response
 from nemo.collections.asr.parts.utils.eval_utils import remove_punctuations
 from nemo.collections.common.metrics import MetricStringToTorchMetric, TextMetricsSet
 from nemo.collections.common.parts.utils import apply_rope_scaling, extend_instance
 from nemo.collections.multimodal.speech_llm.models.modular_models import ModularAudioGPTModel
+from nemo.collections.multimodal.speech_llm.modules.common.audio_text_generation_utils import generate
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import EmbeddingScalingMixin, get_specs
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_sft_model import MegatronGPTSFTModel
+from nemo.collections.nlp.modules.common.text_generation_utils import get_computeprob_response
 from nemo.collections.nlp.modules.common.transformer import transformer_modules
 from nemo.collections.nlp.parts.nlp_overrides import NLPSaveRestoreConnector
 from nemo.collections.nlp.parts.utils_funcs import get_last_rank
-from nemo.utils import AppState, logging, model_utils
-
 from nemo.collections.tts.modules import t5tts_transformer
+from nemo.core.classes.module import NeuralModule
+from nemo.utils import AppState, logging, model_utils
 
 try:
     from megatron.core import InferenceParams, parallel_state, tensor_parallel
@@ -133,7 +133,13 @@ class SumMultiEmbedding(LanguageModelEmbedding):
 
 
 class SpeechDecoder(NeuralModule):
-    def __init__(self, speech_decoder_parms: DictConfig, lantent_dim: int, num_audio_codebooks: int, num_audio_tokens_per_codebook: int):
+    def __init__(
+        self,
+        speech_decoder_parms: DictConfig,
+        lantent_dim: int,
+        num_audio_codebooks: int,
+        num_audio_tokens_per_codebook: int,
+    ):
         super().__init__()
         self.use_input_cache = False
         self.speech_decoder_parms = speech_decoder_parms
@@ -156,20 +162,24 @@ class SpeechDecoder(NeuralModule):
         self.t5_decoder = t5tts_transformer.Transformer(**self.speech_decoder_parms)
 
         # projection to predict audio codes
-        self.final_proj = nn.Linear(self.speech_decoder_parms["d_model"], num_audio_codebooks * num_audio_tokens_per_codebook)
+        self.final_proj = nn.Linear(
+            self.speech_decoder_parms["d_model"], num_audio_codebooks * num_audio_tokens_per_codebook
+        )
 
         # create embeddings for encode input tokens
         if self.cond_on_prev_audio_tokens:
             audio_embeddings = []
             for _ in range(self.num_audio_codebooks):
-                audio_embeddings.append(nn.Embedding(num_audio_tokens_per_codebook, self.speech_decoder_parms["d_model"]))
+                audio_embeddings.append(
+                    nn.Embedding(num_audio_tokens_per_codebook, self.speech_decoder_parms["d_model"])
+                )
 
             self.audio_embeddings = nn.ModuleList(audio_embeddings)
 
     def forward(self, hidden_states, speech_mask, input_audio_tokens=None, return_raw_logits=False):
         # Megatron LLM parallel training returns T, B, F so reshape it
         # T, B, F = hidden_states.size()
-        hidden_states = hidden_states.transpose(0, 1).contiguous() # .reshape(B, T, F) # from [T, B, F] to [B, T, F]
+        hidden_states = hidden_states.transpose(0, 1).contiguous()  # .reshape(B, T, F) # from [T, B, F] to [B, T, F]
         # input cache needed due our transformer kv cache implementation expect the whole left context
         if self.use_input_cache:
             if self.cache["hidden_states"] is None:
@@ -187,7 +197,9 @@ class SpeechDecoder(NeuralModule):
             if self.cache["input_audio_tokens"] is None:
                 self.cache["input_audio_tokens"] = input_audio_tokens
             else:
-                self.cache["input_audio_tokens"] = torch.cat([self.cache["input_audio_tokens"], input_audio_tokens], dim=1)
+                self.cache["input_audio_tokens"] = torch.cat(
+                    [self.cache["input_audio_tokens"], input_audio_tokens], dim=1
+                )
                 input_audio_tokens = self.cache["input_audio_tokens"]
 
         if self.detach_input:
@@ -201,7 +213,9 @@ class SpeechDecoder(NeuralModule):
 
         # workaround for inference, because during inference speech_mask will be None
         if speech_mask is None:
-            speech_mask = torch.ones((speech_decoder_input.size(0), speech_decoder_input.size(1))).to(speech_decoder_input.device)
+            speech_mask = torch.ones((speech_decoder_input.size(0), speech_decoder_input.size(1))).to(
+                speech_decoder_input.device
+            )
 
         if self.cfg_unconditional_prob:
             if self.training:
@@ -224,7 +238,9 @@ class SpeechDecoder(NeuralModule):
             if self.detach_input:
                 input_audio_tokens = input_audio_tokens.detach()
 
-            audio_tokens_embedded = self.embed_audio_tokens(input_audio_tokens.transpose(1, 2).contiguous()) # (B, T', E)
+            audio_tokens_embedded = self.embed_audio_tokens(
+                input_audio_tokens.transpose(1, 2).contiguous()
+            )  # (B, T', E)
             speech_decoder_input = speech_decoder_input + audio_tokens_embedded
 
         decoder_out = self.t5_decoder(x=speech_decoder_input, x_mask=speech_mask)['output']
@@ -257,16 +273,18 @@ class SpeechDecoder(NeuralModule):
         for idx in range(self.num_audio_codebooks):
             si = idx * self.num_audio_tokens_per_codebook
             ei = si + self.num_audio_tokens_per_codebook
-            codebook_logits = all_code_logits_t[:, si:ei] # (B, num_tokens_per_codebook)
-            codebook_logits_topk = torch.topk(codebook_logits, topk, dim=-1)[0] # (B, topk)
-            indices_to_remove = codebook_logits < codebook_logits_topk[:, -1].unsqueeze(-1) # (B, num_tokens_per_codebook)
+            codebook_logits = all_code_logits_t[:, si:ei]  # (B, num_tokens_per_codebook)
+            codebook_logits_topk = torch.topk(codebook_logits, topk, dim=-1)[0]  # (B, topk)
+            indices_to_remove = codebook_logits < codebook_logits_topk[:, -1].unsqueeze(
+                -1
+            )  # (B, num_tokens_per_codebook)
             codebook_logits_rescored = codebook_logits.clone()
             codebook_logits_rescored[indices_to_remove] = float('-inf')
 
-            codebook_probs = torch.softmax(codebook_logits / temperature, dim=-1) # (B, num_tokens_per_codebook)
-            codebook_preds = torch.multinomial(codebook_probs, 1) # (B, 1)
+            codebook_probs = torch.softmax(codebook_logits / temperature, dim=-1)  # (B, num_tokens_per_codebook)
+            codebook_preds = torch.multinomial(codebook_probs, 1)  # (B, 1)
             all_preds.append(codebook_preds)
-        all_preds = torch.cat(all_preds, dim=1).long() # (B, num_codebooks)
+        all_preds = torch.cat(all_preds, dim=1).long()  # (B, num_codebooks)
         return all_preds
 
     def all_logits_to_each_codebooks_logits(self, logits):
@@ -274,9 +292,11 @@ class SpeechDecoder(NeuralModule):
         for idx in range(self.num_audio_codebooks):
             si = idx * self.num_audio_tokens_per_codebook
             ei = si + self.num_audio_tokens_per_codebook
-            codebook_logits = logits[:, :, si:ei] # (B, num_tokens_per_codebook)
+            codebook_logits = logits[:, :, si:ei]  # (B, num_tokens_per_codebook)
             # B, T, F = codebook_logits.size()
-            codebook_logits = codebook_logits.transpose(0, 1).contiguous() # .reshape(T, B, F) # transpose for compatibility with megatron format
+            codebook_logits = codebook_logits.transpose(
+                0, 1
+            ).contiguous()  # .reshape(T, B, F) # transpose for compatibility with megatron format
             all_codebook_logits.append(codebook_logits)
         return all_codebook_logits
 
@@ -310,6 +330,7 @@ class SpeechDecoder(NeuralModule):
             'input_audio_tokens': None,
         }
 
+
 # ToDo: if condition speech tokens on LLM-backbone does not bring good results, we should decouple speech decoder with MCoreGPTModel to avoid the unnecessary complexity
 class S2sMCoreGPTModelSpeechDecoder(MCoreGPTModel):
     def __init__(
@@ -326,15 +347,17 @@ class S2sMCoreGPTModelSpeechDecoder(MCoreGPTModel):
         self.proj_head_dims = proj_head_dims
         self.proj_head_loss_weights = proj_head_loss_weights
         self.speech_decoder_parms = dict(speech_decoder_parms) if speech_decoder_parms is not None else None
-        
-        num_audio_codebooks = len(self.proj_head_dims) - 1 # -1 to not consider the text channel
-        num_audio_tokens_per_codebook = self.proj_head_dims[-1] # the first in the list is the vocab size of llm and the rest is the codec vocab, so get the last one for simplicity
+
+        num_audio_codebooks = len(self.proj_head_dims) - 1  # -1 to not consider the text channel
+        num_audio_tokens_per_codebook = self.proj_head_dims[
+            -1
+        ]  # the first in the list is the vocab size of llm and the rest is the codec vocab, so get the last one for simplicity
 
         self.speech_decoder = SpeechDecoder(
             speech_decoder_parms=dict(self.speech_decoder_parms),
             lantent_dim=config.hidden_size,
             num_audio_codebooks=num_audio_codebooks,
-            num_audio_tokens_per_codebook=num_audio_tokens_per_codebook
+            num_audio_tokens_per_codebook=num_audio_tokens_per_codebook,
         )
 
     def extend_embedding(self, vocab_size: int, include_proj=False):
@@ -432,11 +455,13 @@ class S2sMCoreGPTModelSpeechDecoder(MCoreGPTModel):
             loss = self.compute_language_model_loss(labels, logits)
 
             return loss
-        
+
         else:
             # if speech batch
             # generate speech logits
-            audio_logits, audio_logits_tensor = self.speech_decoder(hidden_states, speech_mask, input_audio_tokens=input_audio_tokens)
+            audio_logits, audio_logits_tensor = self.speech_decoder(
+                hidden_states, speech_mask, input_audio_tokens=input_audio_tokens
+            )
 
             # generate text logits
             text_logits, _ = self.output_layer(
@@ -462,6 +487,7 @@ class S2sMCoreGPTModelSpeechDecoder(MCoreGPTModel):
             )
 
             return tokens_loss
+
 
 class S2sModularAudioGPTModelSpeechDecoder(ModularAudioGPTModel):
     """S2S version of Modularized speech GPT model with Speech Decoder."""
@@ -569,7 +595,9 @@ class S2sModularAudioGPTModelSpeechDecoder(ModularAudioGPTModel):
 
         # if cond llm backbone on speech we need to expand the vocab and instance the sum embedding class
         if getattr(cfg, 'cond_llm_backbone_on_speech_tokens', True):
-            base_model.extend_embedding(model.padded_vocab_size, include_proj=cfg.model.get('combine_emb_by_proj', False))
+            base_model.extend_embedding(
+                model.padded_vocab_size, include_proj=cfg.model.get('combine_emb_by_proj', False)
+            )
 
         # print out params in more details
         model.summarize(max_depth=2)
@@ -852,7 +880,7 @@ class S2sModularAudioGPTModelSpeechDecoder(ModularAudioGPTModel):
                 self.test_step_outputs[dataloader_idx][-1] = outputs
             else:
                 self.test_step_outputs[-1] = outputs
-        
+
         # make sure that the model is in training mode after inference is done
         self.train()
         return outputs
@@ -1293,9 +1321,9 @@ class S2sModularAudioGPTModelSpeechDecoder(ModularAudioGPTModel):
                             metric_text_preds = text_preds
                             metric_labels = labels
 
-                        metric_result = torch.Tensor([sacrebleu.corpus_bleu(metric_text_preds, [metric_labels]).score]).to(
-                            self.device
-                        )
+                        metric_result = torch.Tensor(
+                            [sacrebleu.corpus_bleu(metric_text_preds, [metric_labels]).score]
+                        ).to(self.device)
                     elif text_metric_name == 'wer':  # asr-wer, wer
                         for pred, label in zip(text_preds, labels):
                             # remove punctuationsa and extra spaces
@@ -1307,7 +1335,9 @@ class S2sModularAudioGPTModelSpeechDecoder(ModularAudioGPTModel):
                         metric_result = metric_fn.compute()
                         metric_fn.reset()
                     elif text_metric_name == "tts-wer":
-                        for pred, label in zip(deduplicated_outputs['speech_preds_transcribed'], deduplicated_outputs['preds']):
+                        for pred, label in zip(
+                            deduplicated_outputs['speech_preds_transcribed'], deduplicated_outputs['preds']
+                        ):
                             # remove punctuations and extra spaces
                             if self.cfg.get('norm_val_metrics', False):
                                 pred = normalize_text(pred)
@@ -1335,7 +1365,11 @@ class S2sModularAudioGPTModelSpeechDecoder(ModularAudioGPTModel):
                             metric_labels = labels
 
                         metric_result = torch.Tensor(
-                            [sacrebleu.corpus_bleu(get_turn_split(metric_text_preds, 2), [get_turn_split(metric_labels, 2)]).score]
+                            [
+                                sacrebleu.corpus_bleu(
+                                    get_turn_split(metric_text_preds, 2), [get_turn_split(metric_labels, 2)]
+                                ).score
+                            ]
                         ).to(self.device)
                     elif metric_name == 'turndiff':
                         metric_result = torch.Tensor(
@@ -1585,7 +1619,14 @@ class S2sModularAudioGPTModelSpeechDecoder(ModularAudioGPTModel):
 
     def prepare_llm_input_duplex_from_multiturn(self, audio_batch):
         if self.cfg.get('noise_prob', 0.0) and random.random() < self.cfg.get('noise_prob', 0.0):
-            self.add_noise_to_batch(audio_batch, os.path.join(self.cfg.noise_path, 'train'), random.randint(10, 40))
+            if not (
+                self.cfg.get("exclude_noise_on_s2s_duplex_overlap", False) and 's2s_duplex_overlap' in audio_batch
+            ):
+                self.add_noise_to_batch(
+                    audio_batch,
+                    os.path.join(self.cfg.noise_path, self.cfg.get('noise_path_name', 'train')),
+                    random.randint(self.cfg.get('noise_min_snr', 10), self.cfg.get('noise_max_snr', 40)),
+                )
         # real duplex data read from dataloader
         new_user_signal = audio_batch['audio_signal']
         new_user_signal_length = audio_batch['audio_signal_length']
@@ -1700,8 +1741,8 @@ class S2sModularAudioGPTModelSpeechDecoder(ModularAudioGPTModel):
                 if 'target_texts_merge' in audio_batch:
                     text_channel = audio_batch['target_texts_merge'][i]
                     sliced_text_channel = text_channel[: loss_mask.shape[1]].unsqueeze(-1)
-                    loss_mask = torch.where(sliced_text_channel == self.tokenizer.bos_id, 2.0, loss_mask)
-                    loss_mask = torch.where(sliced_text_channel == self.tokenizer.eos_id, 2.0, loss_mask)
+                    loss_mask = torch.where(sliced_text_channel == self.tokenizer.bos_id, 4.0, loss_mask)
+                    loss_mask = torch.where(sliced_text_channel == self.tokenizer.eos_id, 4.0, loss_mask)
                 else:
                     raise ValueError("scale_loss_mask_by=bos_eos is only supported for target_texts_merge")
         elif scale_loss_mask_by == 'non_sil':
@@ -1709,13 +1750,25 @@ class S2sModularAudioGPTModelSpeechDecoder(ModularAudioGPTModel):
                 if 'target_texts_merge' in audio_batch:
                     text_channel = audio_batch['target_texts_merge'][i]
                     sliced_text_channel = text_channel[: loss_mask.shape[1]].unsqueeze(-1)
-                    loss_mask = torch.where(labels[:, :, :] != labels[:, :1, :], 2.0, loss_mask)
+                    loss_mask = torch.where(labels[:, :, :] != labels[:, :1, :], 4.0, loss_mask)
                 else:
                     raise ValueError("scale_loss_mask_by=bos_eos is only supported for target_texts_merge")
+        elif scale_loss_mask_by == 'non_sil_st':
+            if 'target_texts_merge' in audio_batch:
+                loss_mask = torch.where(labels[:, :, :1] != labels[i, :1, :1], 4.0, loss_mask)
+            else:
+                raise ValueError("scale_loss_mask_by=bos_eos is only supported for target_texts_merge")
+        elif scale_loss_mask_by == 'non_sil_t':
+            if 'target_texts_merge' in audio_batch:
+                loss_mask[:, :, :1] = torch.where(labels[:, :, :1] != labels[i, :1, :1], 4.0, loss_mask[:, :, :1])
+            else:
+                raise ValueError("scale_loss_mask_by=bos_eos is only supported for target_texts_merge")
         elif scale_loss_mask_by == None:
             pass
         else:
             raise ValueError(f"Unknown scale_loss_mask_by: {scale_loss_mask_by}")
+        if self.cfg.get("exclude_speech_loss_on_s2s_duplex_overlap", False) and 's2s_duplex_overlap' in audio_batch:
+            loss_mask[:, :, 1:] = 0.0
         limit_max_seq_length = self.cfg.get("limit_max_seq_length", None)
         if limit_max_seq_length is not None and limit_max_seq_length < labels.shape[1] and self.training:
             start = random.randint(0, labels.shape[1] - limit_max_seq_length - 1)
@@ -1780,17 +1833,28 @@ class S2sModularAudioGPTModelSpeechDecoder(ModularAudioGPTModel):
 
     # TODO: move the following to dataloader
     def add_noise_to_batch(self, batch, noise_folder, snr_db=20):
-        batch_audio = batch['audio_signal']  #  torch tensor，Shape: (batch_size, length)
+        if self.cfg.get('debug_noise_audio', False):
+            self.write_wave(
+                batch['audio_signal'][0],
+                "/lustre/fsw/portfolios/llmservice/users/zhehuaic/works/mod_speech_llm/tmp/dbg0.wav",
+            )
+
+        batch_audio = batch['audio_signal'][:]  #  torch tensor，Shape: (batch_size, length)
         batch_size, audio_length = batch_audio.shape
 
-        noise_files = [f for f in os.listdir(noise_folder) if f.endswith('.wav')]
+        import glob
+
+        noise_files = [f for f in glob.glob(noise_folder + "/*.wav")]
         if not noise_files:
             raise ValueError(f"No noise files found in {noise_folder}")
 
         for i in range(batch_size):
 
-            noise_path = os.path.join(noise_folder, random.choice(noise_files))
+            noise_path = random.choice(noise_files)
             noise, sr = sf.read(noise_path, dtype='float32')
+            # resample noise from sr to self.cfg.data.train_ds.sample_rate
+            if self.cfg.get('noise_resample', False) and sr != self.cfg.data.train_ds.sample_rate:
+                noise = librosa.resample(noise, orig_sr=sr, target_sr=self.cfg.data.train_ds.sample_rate)
 
             if len(noise.shape) > 1:
                 noise = np.mean(noise, axis=1)
@@ -1815,7 +1879,20 @@ class S2sModularAudioGPTModelSpeechDecoder(ModularAudioGPTModel):
 
             batch_audio[i] = batch_audio[i] + noise_tensor
 
+        if self.cfg.get('debug_noise_audio', False):
+            self.write_wave(
+                batch_audio[0], "/lustre/fsw/portfolios/llmservice/users/zhehuaic/works/mod_speech_llm/tmp/dbg1.wav"
+            )
+            self.write_wave(
+                noise_tensor, "/lustre/fsw/portfolios/llmservice/users/zhehuaic/works/mod_speech_llm/tmp/dbg2.wav"
+            )
         batch['audio_signal'] = batch_audio
+
+    def write_wave(self, one_audio_signal, file_name):
+        one_audio_signal = one_audio_signal.cpu().numpy()
+        one_audio_signal = one_audio_signal.astype(np.float32)
+        # one_audio_signal = np.clip(one_audio_signal, -1.0, 1.0)
+        sf.write(file_name, one_audio_signal, self.cfg.data.train_ds.sample_rate)
 
     def prepare_llm_input(self, audio_batch):
         # handle duplex and singleturn s2s
@@ -1937,7 +2014,15 @@ class S2sModularAudioGPTModelSpeechDecoder(ModularAudioGPTModel):
         )
 
     def _gpt_forward(
-        self, input_ids, position_ids, encoder_input, attention_mask, labels, checkpoint_activations_all_layers, speech_mask=None, input_audio_tokens=None,
+        self,
+        input_ids,
+        position_ids,
+        encoder_input,
+        attention_mask,
+        labels,
+        checkpoint_activations_all_layers,
+        speech_mask=None,
+        input_audio_tokens=None,
     ):
         """Forward pass of the GPT model."""
         if self.megatron_amp_O2:
@@ -1987,7 +2072,14 @@ class S2sModularAudioGPTModelSpeechDecoder(ModularAudioGPTModel):
             # use last position of loss mask as speech mask
             speech_mask = loss_mask[:, :, -1].reshape(loss_mask.size(0), loss_mask.size(1))
             output = self._gpt_forward(
-                None, None, encoder_input, attention_mask, labels, checkpoint_activations_all_layers, speech_mask=speech_mask, input_audio_tokens=input_audio_tokens,
+                None,
+                None,
+                encoder_input,
+                attention_mask,
+                labels,
+                checkpoint_activations_all_layers,
+                speech_mask=speech_mask,
+                input_audio_tokens=input_audio_tokens,
             )
             multimodal_output['audio_text'] = (output, loss_mask)
 
@@ -2072,4 +2164,3 @@ class S2sModularAudioGPTModelSpeechDecoder(ModularAudioGPTModel):
 
                 for param in self.model.speech_dim_to_text_proj.parameters():
                     param.requires_grad = True
-
