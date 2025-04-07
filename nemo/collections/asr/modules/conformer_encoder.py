@@ -852,7 +852,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         if hasattr(self.pre_encode, "get_sampling_frames"):
             sampling_frames = self.pre_encode.get_sampling_frames()
         else:
-            sampling_frames = 0
+            sampling_frames = 1
 
         if isinstance(sampling_frames, list):
             streaming_cfg.chunk_size = [
