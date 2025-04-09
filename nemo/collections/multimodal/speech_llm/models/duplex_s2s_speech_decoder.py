@@ -1753,6 +1753,13 @@ class S2sModularAudioGPTModelSpeechDecoder(ModularAudioGPTModel):
                     loss_mask = torch.where(labels[:, :, :] != labels[:, :1, :], 4.0, loss_mask)
                 else:
                     raise ValueError("scale_loss_mask_by=bos_eos is only supported for target_texts_merge")
+        elif scale_loss_mask_by == 'agent_turn':
+            if 'agent_turns_merge' in audio_batch:
+                loss_mask = torch.where(
+                    audio_batch['agent_turns_merge'][:, 1 : loss_mask.shape[1] + 1].unsqueeze(-1) == 1, 4.0, loss_mask
+                )
+            else:
+                raise ValueError("scale_loss_mask_by=bos_eos is only supported for target_texts_merge")
         elif scale_loss_mask_by == 'non_sil_st':
             if 'target_texts_merge' in audio_batch:
                 loss_mask = torch.where(labels[:, :, :1] != labels[i, :1, :1], 4.0, loss_mask)

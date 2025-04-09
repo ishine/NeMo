@@ -414,6 +414,7 @@ class LhotseAudioQuestionAnswerDataset(torch.utils.data.Dataset):
         cnt = 0
         skipped = 0
         new_target_texts = []
+        new_agent_turns = []
         new_source_texts = []
         for i in range(len(num_turns)):
             each_target_texts = []
@@ -438,6 +439,10 @@ class LhotseAudioQuestionAnswerDataset(torch.utils.data.Dataset):
                     if hasattr(self.text_processor.tokenizer, 'pad_id') and self.text_processor.tokenizer.pad_id >= 0
                     else self.text_processor.tokenizer.unk_id
                 ),
+            )
+            cur_agent_turn = torch.full(
+                [total_steps],
+                (0),
             )
 
             # assert len(text_start_time[i]) == num_turns[i] // 2
@@ -466,6 +471,7 @@ class LhotseAudioQuestionAnswerDataset(torch.utils.data.Dataset):
                     cur_source_text[(text_start_step + 1) : (text_start_step + 1 + src_text_len)] = source_texts[cnt][
                         :src_text_len
                     ]
+                    cur_agent_turn[text_start_step : (text_end_step + 1)] = 1
 
                 elif getattr(cut, "s2s_duplex_align", False):
                     text_len_plus_eos = torch.tensor(text_end_step - text_start_step)
@@ -489,9 +495,11 @@ class LhotseAudioQuestionAnswerDataset(torch.utils.data.Dataset):
 
             new_target_texts.append(cur_target_text)
             new_source_texts.append(cur_source_text)
+            new_agent_turns.append(cur_agent_turn)
 
         target_texts_merge, target_text_lengths = collate_and_pad(new_target_texts)
         source_texts_merge, source_text_lengths = collate_and_pad(new_source_texts)
+        agent_turns_merge, agent_turns_lengths = collate_and_pad(new_agent_turns)
 
         assert cnt + skipped == len(target_texts)
         assert target_texts_merge.shape[0] == len(num_turns)
@@ -511,6 +519,7 @@ class LhotseAudioQuestionAnswerDataset(torch.utils.data.Dataset):
             "tokens": target_texts_merge,  # used in _reconfigure_and_process_inference_batch
             "target_texts_merge": target_texts_merge,  # used in prepare_llm_input
             "source_texts_merge": source_texts_merge,  # used in prepare_llm_input
+            "agent_turns_merge": agent_turns_merge,
             "contexts": target_texts_merge[:, :1],  # used in inference
             "context_lengths": torch.ones_like(target_text_lengths),  # placeholder
             "target_texts": target_texts_merge,
@@ -653,6 +662,7 @@ class LhotseAudioQuestionAnswerDataset(torch.utils.data.Dataset):
         num_turns = []
         new_target_texts = []
         new_source_texts = []
+        new_agent_turns = []
         for id, cut in enumerate(cuts):
 
             def validate_time(input_time):
@@ -682,6 +692,10 @@ class LhotseAudioQuestionAnswerDataset(torch.utils.data.Dataset):
                         else self.text_processor.tokenizer.unk_id
                     ),
                 )
+                cur_agent_turn = torch.full(
+                    [total_steps],
+                    (0),
+                )
                 for i, segment in enumerate(segments):
                     # Extract agent text
                     pattern = r"<\|\d+\|>"
@@ -710,15 +724,18 @@ class LhotseAudioQuestionAnswerDataset(torch.utils.data.Dataset):
                     text_len = min(text_end_step - text_start_step - 1, target_text.shape[0])
                     cur_target_text[(text_start_step + 1) : (text_start_step + 1 + text_len)] = target_text[:text_len]
                     cur_target_text[text_end_step] = self.text_processor.eos_id
-                return cur_target_text
+                    cur_agent_turn[text_start_step : (text_end_step + 1)] = 1
+                return cur_target_text, cur_agent_turn
 
-            cur_target_text = get_text_from_segments(cut.agent_segments, total_steps)
-            cur_source_text = get_text_from_segments(cut.user_segments, total_steps)
+            cur_target_text, cur_agent_turn = get_text_from_segments(cut.agent_segments, total_steps)
+            cur_source_text, _ = get_text_from_segments(cut.user_segments, total_steps)
             new_target_texts.append(cur_target_text)
             new_source_texts.append(cur_source_text)
+            new_agent_turns.append(cur_agent_turn)
 
         target_texts_merge, target_text_lengths = collate_and_pad(new_target_texts)
         source_texts_merge, source_text_lengths = collate_and_pad(new_source_texts)
+        agent_turns_merge, agent_turns_lengths = collate_and_pad(new_agent_turns)
         assert target_texts_merge.shape[0] == len(num_turns)
 
         # note: the codec id in labels and contexts and others do not consider the offset e.g. speech_eos is 1002
@@ -733,6 +750,7 @@ class LhotseAudioQuestionAnswerDataset(torch.utils.data.Dataset):
             "tokens": target_texts_merge,  # used in _reconfigure_and_process_inference_batch
             "target_texts_merge": target_texts_merge,  # used in prepare_llm_input
             "source_texts_merge": source_texts_merge,  # used in prepare_llm_input
+            "agent_turns_merge": agent_turns_merge,
             "contexts": target_texts_merge[:, :1],  # used in inference
             "context_lengths": torch.ones_like(target_text_lengths),
             "target_texts": target_texts_merge,
