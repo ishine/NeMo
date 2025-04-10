@@ -1759,6 +1759,15 @@ class S2sModularAudioGPTModelSpeechDecoder(ModularAudioGPTModel):
                 loss_mask = torch.where(
                     audio_batch['agent_turns_merge'][:, : loss_mask.shape[1]].unsqueeze(-1) == 1, 4.0, loss_mask
                 )
+        elif scale_loss_mask_by == 'non_sil_t_agent_turn':
+            # should exist in training loop; not in inference
+            if 'agent_turns_merge' in audio_batch:
+                loss_mask[:, :, 1:] = torch.where(
+                    audio_batch['agent_turns_merge'][:, : loss_mask.shape[1]].unsqueeze(-1) == 1,
+                    4.0,
+                    loss_mask[:, :, 1:],
+                )
+                loss_mask[:, :, :1] = torch.where(labels[:, :, :1] != labels[i, :1, :1], 4.0, loss_mask[:, :, :1])
         elif scale_loss_mask_by == 'non_sil_st':
             if 'target_texts_merge' in audio_batch:
                 loss_mask = torch.where(labels[:, :, :1] != labels[i, :1, :1], 4.0, loss_mask)
