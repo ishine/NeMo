@@ -1851,10 +1851,11 @@ class S2sModularAudioGPTModelSpeechDecoder(ModularAudioGPTModel):
         if self.cfg.get('debug_noise_audio', False):
             self.write_wave(
                 batch['audio_signal'][0],
-                "/lustre/fsw/portfolios/llmservice/users/zhehuaic/works/mod_speech_llm/tmp/dbg0.wav",
+                "/lustre/fsw/portfolios/llmservice/users/zhehuaic/works/mod_speech_llm/tmp/dbg_original.wav",
             )
 
         batch_audio = batch['audio_signal'][:]  #  torch tensor，Shape: (batch_size, length)
+
         batch_size, audio_length = batch_audio.shape
 
         import glob
@@ -1865,14 +1866,26 @@ class S2sModularAudioGPTModelSpeechDecoder(ModularAudioGPTModel):
 
         for i in range(batch_size):
 
-            noise_path = random.choice(noise_files)
-            noise, sr = sf.read(noise_path, dtype='float32')
-            # resample noise from sr to self.cfg.data.train_ds.sample_rate
-            if self.cfg.get('noise_resample', False) and sr != self.cfg.data.train_ds.sample_rate:
-                noise = librosa.resample(noise, orig_sr=sr, target_sr=self.cfg.data.train_ds.sample_rate)
+            def get_noise(noise_files):
 
-            if len(noise.shape) > 1:
-                noise = np.mean(noise, axis=1)
+                noise_path = random.choice(noise_files)
+                noise, sr = sf.read(noise_path, dtype='float32')
+
+                # resample noise from sr to self.cfg.data.train_ds.sample_rate
+                if self.cfg.get('noise_resample', False) and sr != self.cfg.data.train_ds.sample_rate:
+                    noise = librosa.resample(noise, orig_sr=sr, target_sr=self.cfg.data.train_ds.sample_rate)
+
+                if len(noise.shape) > 1:
+                    noise = np.mean(noise, axis=1)
+                return noise
+
+            noise = get_noise(noise_files)
+            noise2 = get_noise(noise_files)
+            noise = np.concatenate([noise, noise2], axis=0)
+            self.write_wave(
+                torch.tensor(noise, dtype=batch_audio.dtype, device=batch_audio.device),
+                "/lustre/fsw/portfolios/llmservice/users/zhehuaic/works/mod_speech_llm/tmp/dbg_originalnoise.wav",
+            )
 
             if len(noise) < audio_length:
 
@@ -1885,22 +1898,63 @@ class S2sModularAudioGPTModelSpeechDecoder(ModularAudioGPTModel):
 
             noise_tensor = torch.tensor(noise, dtype=batch_audio.dtype, device=batch_audio.device)
 
-            signal_power = torch.mean(batch_audio[i] ** 2) + 1e-8
-            noise_power = torch.mean(noise_tensor**2) + 1e-8
+            def get_scale_factor(signal, noise, snr_db):
+                signal_power = torch.mean(signal**2) + 1e-8
+                noise_power = torch.mean(noise**2) + 1e-8
 
-            target_noise_power = signal_power / (10 ** (snr_db / 10))
-            scaling_factor = torch.sqrt(target_noise_power / noise_power)
+                target_noise_power = signal_power / (10 ** (snr_db / 10))
+                scaling_factor = torch.sqrt(target_noise_power / noise_power)
+                return scaling_factor
+
+            if random.random() < self.cfg.get('noise_prob_scale_user', 0.0):
+                scaling_factor = get_scale_factor(
+                    batch_audio[i],
+                    batch_audio[i],
+                    random.randint(
+                        self.cfg.get('noise_prob_scale_user_min_snr', -15),
+                        self.cfg.get('noise_prob_scale_user_max_snr', 24),
+                    ),
+                )
+                batch_audio[i] = batch_audio[i] * scaling_factor
+            scaling_factor = get_scale_factor(batch_audio[i], noise_tensor, snr_db)
             noise_tensor = noise_tensor * scaling_factor
+
+            from scipy.signal import butter, lfilter
+
+            # Function to create a low-pass filter
+            def butter_lowpass(cutoff, fs, order=5):
+                nyquist = 0.5 * fs
+                normal_cutoff = cutoff / nyquist
+                b, a = butter(order, normal_cutoff, btype='low', analog=False)
+                return b, a
+
+            # Function to apply the low-pass filter to data (tmp impl on cpu)
+            def lowpass_filter(data, cutoff, fs, order=5):
+                b, a = butter_lowpass(cutoff, fs, order=order)
+                b = torch.tensor(b, dtype=torch.float32).cuda()
+                a = torch.tensor(a, dtype=torch.float32).cuda()
+                # Apply the filter using lfilter function from scipy..numpysig.numpynal (CPU)
+                y_cpu = lfilter(b.cpu().numpy(), a.cpu().numpy(), data.cpu().numpy())
+                # Convert the filtered data back to torch tensor and move to GPU.numpy
+                y_gpu = torch.tensor(y_cpu, dtype=torch.float32).cuda()
+                return y_gpu
+
+            if random.random() < self.cfg.get('noise_prob_low_pass', 0.0):
+                # Define the desired cutoff frequency (in Hz)
+                cutoff = 1000.0
+                # Apply low-pass filter to the WAV data
+                noise_tensor = lowpass_filter(noise_tensor, cutoff, self.cfg.data.train_ds.sample_rate)
 
             batch_audio[i] = batch_audio[i] + noise_tensor
 
         if self.cfg.get('debug_noise_audio', False):
             self.write_wave(
-                batch_audio[0], "/lustre/fsw/portfolios/llmservice/users/zhehuaic/works/mod_speech_llm/tmp/dbg1.wav"
+                batch_audio[0], "/lustre/fsw/portfolios/llmservice/users/zhehuaic/works/mod_speech_llm/tmp/dbg_aug.wav"
             )
             self.write_wave(
-                noise_tensor, "/lustre/fsw/portfolios/llmservice/users/zhehuaic/works/mod_speech_llm/tmp/dbg2.wav"
+                noise_tensor, "/lustre/fsw/portfolios/llmservice/users/zhehuaic/works/mod_speech_llm/tmp/dbg_noise.wav"
             )
+            breakpoint()
         batch['audio_signal'] = batch_audio
 
     def write_wave(self, one_audio_signal, file_name):
