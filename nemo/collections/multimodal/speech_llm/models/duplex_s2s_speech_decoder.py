@@ -1882,10 +1882,11 @@ class S2sModularAudioGPTModelSpeechDecoder(ModularAudioGPTModel):
             noise = get_noise(noise_files)
             noise2 = get_noise(noise_files)
             noise = np.concatenate([noise, noise2], axis=0)
-            self.write_wave(
-                torch.tensor(noise, dtype=batch_audio.dtype, device=batch_audio.device),
-                "/lustre/fsw/portfolios/llmservice/users/zhehuaic/works/mod_speech_llm/tmp/dbg_originalnoise.wav",
-            )
+            if self.cfg.get('debug_noise_audio', False):
+                self.write_wave(
+                    torch.tensor(noise, dtype=batch_audio.dtype, device=batch_audio.device),
+                    "/lustre/fsw/portfolios/llmservice/users/zhehuaic/works/mod_speech_llm/tmp/dbg_originalnoise.wav",
+                )
 
             if len(noise) < audio_length:
 
