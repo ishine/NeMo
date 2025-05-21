@@ -817,6 +817,22 @@ def s2s_sample_sequence_batch(
 
                 if inference_strategy.model.get_inference_config().get('unk_boost', None):
                     logits[0][:, 0] += inference_strategy.model.get_inference_config().get('unk_boost', None)
+                if inference_strategy.model.get_inference_config().get('speech_bos_boost', None):
+                    for i in range(1, len(logits)):
+                        logits[i][:, model.cfg.speech_bos_id] += inference_strategy.model.get_inference_config().get(
+                            'speech_bos_boost', None
+                        )
+                if inference_strategy.model.get_inference_config().get('speech_unk_boost', None):
+                    for i in range(1, len(logits)):
+                        logits[i][:, model.cfg.speech_unk_id] += inference_strategy.model.get_inference_config().get(
+                            'speech_unk_boost', None
+                        )
+                if inference_strategy.model.get_inference_config().get('speech_sil_boost', None):
+                    for i in range(1, len(logits)):
+                        logits[i][:, tokens[0, 0, i]] += inference_strategy.model.get_inference_config().get(
+                            'speech_sil_boost', None
+                        )
+
                 if inference_strategy.model.get_inference_config().get('bos_boost', None):
                     logits[0][:, 1] += inference_strategy.model.get_inference_config().get('bos_boost', None)
                 if inference_strategy.model.get_inference_config().get('eos_boost', None):

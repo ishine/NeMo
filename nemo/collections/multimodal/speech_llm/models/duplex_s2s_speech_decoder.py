@@ -1722,6 +1722,10 @@ class S2sModularAudioGPTModelSpeechDecoder(ModularAudioGPTModel):
         assert self.cfg.get(
             'duplex_loss_on_all_steps', False
         ), "only support duplex_loss_on_all_steps in real duplex data read from dataloader"
+        if self.cfg.get('duplex_loss_exclude_seq_padding', False):
+            # set the mask based on the audio lens to disconsider sequence padding in loss
+            for i in range(encoder_length.size(0)):
+                loss_mask[i, encoder_length[i] :, :] = 0
         # lookup input_ids
         if self.cfg.get('megatron_amp_O2', False):
             base_module = self.model.module
@@ -1778,6 +1782,38 @@ class S2sModularAudioGPTModelSpeechDecoder(ModularAudioGPTModel):
                 loss_mask[:, :, :1] = torch.where(labels[:, :, :1] != labels[i, :1, :1], 4.0, loss_mask[:, :, :1])
             else:
                 raise ValueError("scale_loss_mask_by=bos_eos is only supported for target_texts_merge")
+        elif scale_loss_mask_by == 'dynamic_text_non_sil_and_bos_eos':
+            if 'target_texts_merge' in audio_batch:
+                text_silence_token_id = (
+                    self.tokenizer.pad_id
+                    if hasattr(self.tokenizer, 'pad_id') and self.tokenizer.pad_id >= 0
+                    else self.tokenizer.unk_id
+                )
+
+                # Set text loss weights
+                for i, answer_codec in enumerate(answer_codecs):
+                    current_mask = loss_mask[i, :, :1]
+                    num_real_padding_tokens = (torch.numel(current_mask) - current_mask.sum()).item()
+                    silence_idxs = labels[i, :, :1] == text_silence_token_id
+                    # ignore the padding ids
+                    silence_idxs = silence_idxs * current_mask.bool()
+                    num_silence_tokens = silence_idxs.sum().item()
+                    num_non_silence = torch.numel(silence_idxs) - num_real_padding_tokens
+                    factor = num_silence_tokens / num_non_silence
+
+                    # make silence text tokens 2 x times less relevant in the loss than the silence tokens
+                    new_weight = factor / 2
+                    loss_mask[i, :, :1] = torch.where(silence_idxs, new_weight, loss_mask[i, :, :1])
+
+                # set eos/bos 6x more important than a speech tokens and 12x more than a silence, this is that high because we will have only one bos/eos per turn and if it is nor right predicted the model will not produce text/speech
+                text_channel = audio_batch['target_texts_merge'][i]
+                sliced_text_channel = text_channel[: loss_mask.shape[1]].unsqueeze(-1)
+                loss_mask[:, :, :1] = torch.where(
+                    sliced_text_channel == self.tokenizer.bos_id, 6.0, loss_mask[:, :, :1]
+                )
+                loss_mask[:, :, :1] = torch.where(
+                    sliced_text_channel == self.tokenizer.eos_id, 6.0, loss_mask[:, :, :1]
+                )
         elif scale_loss_mask_by == None:
             pass
         else:
@@ -1881,7 +1917,8 @@ class S2sModularAudioGPTModelSpeechDecoder(ModularAudioGPTModel):
 
             noise = get_noise(noise_files)
             noise2 = get_noise(noise_files)
-            noise = np.concatenate([noise, noise2], axis=0)
+            noise3 = get_noise(noise_files)
+            noise = np.concatenate([noise, noise2, noise3], axis=0)
             if self.cfg.get('debug_noise_audio', False):
                 self.write_wave(
                     torch.tensor(noise, dtype=batch_audio.dtype, device=batch_audio.device),
