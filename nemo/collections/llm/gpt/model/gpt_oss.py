@@ -39,7 +39,7 @@ if TYPE_CHECKING:
 
     from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 
-quick_gelu, HAVE_QUICK_GELU = safe_import_from("megatron.core.fusions.fused_bias_geglu", "quick_gelu", alt=object)
+quick_gelu, HAVE_QUICK_GELU = safe_import_from("megatron.core.activations", "quick_gelu", alt=object)
 
 
 @dataclass
@@ -64,7 +64,7 @@ class GPTOSSConfig(GPTConfig):
     position_embedding_type: str = "yarn"
     rotary_base: int = 150000
     rotary_scaling_factor: float = 32.0
-    yarn_original_max_position_embeddings: int = 131072
+    yarn_original_max_position_embeddings: int = 4096
     yarn_beta_fast: float = 32.0
     yarn_beta_slow: float = 1.0
     yarn_correction_range_round_to_int: bool = False
