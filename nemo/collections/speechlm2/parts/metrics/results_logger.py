@@ -9,6 +9,7 @@ import time
 
 import torch
 import torchaudio
+import soundfile as sf
 
 from nemo.utils import logging
 from nemo.collections.speechlm2.parts.metrics.mcq_evaluator import MCQEvaluator
@@ -53,6 +54,11 @@ class ResultsLogger:
         self.save_path = save_path
         self.audio_save_path = os.path.join(save_path, "pred_wavs")
         os.makedirs(self.audio_save_path, exist_ok=True)
+        # Separate folders for agent-only and user-only audio (matches old code behavior).
+        self.agent_audio_save_path = os.path.join(save_path, "agent")
+        self.user_audio_save_path = os.path.join(save_path, "user")
+        os.makedirs(self.agent_audio_save_path, exist_ok=True)
+        os.makedirs(self.user_audio_save_path, exist_ok=True)
         self.metadata_save_path = os.path.join(save_path, "metadatas")
         os.makedirs(self.metadata_save_path, exist_ok=True)
         self.cached_results = defaultdict(list)
@@ -83,21 +89,44 @@ class ResultsLogger:
     @staticmethod
     def merge_and_save_audio(
             out_audio_path: str, pred_audio: torch.Tensor, pred_audio_sr: int, user_audio: torch.Tensor,
-            user_audio_sr: int
+            user_audio_sr: int, agent_out_audio_path: Optional[str] = None, user_out_audio_path: Optional[str] = None
     ) -> None:
-        user_audio = torchaudio.functional.resample(user_audio.float(), user_audio_sr, pred_audio_sr)
-        T1, T2 = pred_audio.shape[0], user_audio.shape[0]
-        max_len = max(T1, T2)
-        pred_audio_padded = torch.nn.functional.pad(pred_audio, (0, max_len - T1), mode='constant', value=0)
-        user_audio_padded = torch.nn.functional.pad(user_audio, (0, max_len - T2), mode='constant', value=0)
-        combined_wav = torch.cat(
-            [
-                user_audio_padded.squeeze().unsqueeze(0).detach().cpu(),
-                pred_audio_padded.squeeze().unsqueeze(0).detach().cpu(),
-            ],
-            dim=0,
-        )
-        torchaudio.save(out_audio_path, combined_wav.squeeze(), pred_audio_sr)
+        if user_audio is not None:
+            user_audio = torchaudio.functional.resample(user_audio.float(), user_audio_sr, pred_audio_sr)
+            T1, T2 = pred_audio.shape[0], user_audio.shape[0]
+            max_len = max(T1, T2)
+            pred_audio_padded = torch.nn.functional.pad(pred_audio, (0, max_len - T1), mode='constant', value=0)
+            user_audio_padded = torch.nn.functional.pad(user_audio, (0, max_len - T2), mode='constant', value=0)
+            combined_wav = torch.cat(
+                [
+                    user_audio_padded.squeeze().unsqueeze(0).detach().cpu(),
+                    pred_audio_padded.squeeze().unsqueeze(0).detach().cpu(),
+                ],
+                dim=0,
+            ).squeeze()
+            if agent_out_audio_path is not None:
+                sf.write(
+                    agent_out_audio_path,
+                    pred_audio_padded.squeeze().unsqueeze(0).detach().cpu().numpy().astype('float32').T,
+                    pred_audio_sr,
+                )
+            if user_out_audio_path is not None:
+                sf.write(
+                    user_out_audio_path,
+                    user_audio_padded.squeeze().unsqueeze(0).detach().cpu().numpy().astype('float32').T,
+                    pred_audio_sr,
+                )
+        else:
+            combined_wav = pred_audio.unsqueeze(0).detach().cpu()
+            if agent_out_audio_path is not None:
+                sf.write(
+                    agent_out_audio_path,
+                    pred_audio.squeeze().unsqueeze(0).detach().cpu().numpy().astype('float32').T,
+                    pred_audio_sr,
+                )
+
+        os.makedirs(os.path.dirname(out_audio_path), exist_ok=True)
+        sf.write(out_audio_path, combined_wav.numpy().astype('float32').T, pred_audio_sr)
         logging.info(f"Audio saved at: {out_audio_path}")
 
     @staticmethod
@@ -149,8 +178,8 @@ class ResultsLogger:
             pred_audio_sr,
             user_audio,
             user_audio_sr,
-            src_refs: list[str],
-            src_hyps: list[str],
+            src_refs: Optional[list[str]] = None,
+            src_hyps: Optional[list[str]] = None,
             system_prompt=None,
             system_prompt_supervision_0: Optional[list[str]] = None,
             source_turns: Optional[List[List[dict]]] = None,
@@ -161,6 +190,7 @@ class ResultsLogger:
             target_function_channel: Optional[list[str]] = None,
             function_call_positions: Optional[list[dict]] = None,
             target_text_after_tool_response: Optional[list] = None,
+            audio_lens: Optional[torch.Tensor] = None,
             # Optional fields used by NemotronVoiceChat (ignored here if provided).
             eou_pred=None,
             fps=None,
@@ -175,14 +205,34 @@ class ResultsLogger:
             # Add rank info to audio filename to avoid conflicts
             if pred_audio is not None:
                 out_audio_path = os.path.join(self.audio_save_path, f"{name}_{sample_id}_rank{rank}.wav")
-                self.merge_and_save_audio(out_audio_path, pred_audio[i], pred_audio_sr, user_audio[i], user_audio_sr)
+                agent_out_audio_path = os.path.join(self.agent_audio_save_path, f"{name}_{sample_id}_rank{rank}.wav")
+                user_out_audio_path = os.path.join(self.user_audio_save_path, f"{name}_{sample_id}_rank{rank}.wav")
+
+                # Trim batch-padded audio to per-sample actual length (accounts for extra_decoding_seconds).
+                cur_user_audio = user_audio[i] if user_audio is not None else None
+                cur_pred_audio = pred_audio[i]
+                if audio_lens is not None and cur_user_audio is not None:
+                    actual_user_len = int(audio_lens[i].item())
+                    cur_user_audio = cur_user_audio[:actual_user_len]
+                    actual_pred_len = int(actual_user_len / user_audio_sr * pred_audio_sr)
+                    cur_pred_audio = cur_pred_audio[:actual_pred_len]
+
+                self.merge_and_save_audio(
+                    out_audio_path,
+                    cur_pred_audio,
+                    pred_audio_sr,
+                    cur_user_audio,
+                    user_audio_sr,
+                    agent_out_audio_path=agent_out_audio_path,
+                    user_out_audio_path=user_out_audio_path,
+                )
 
             out_dict = {
                 "id": sample_id,
                 "target_text": refs[i],
                 "pred_text": hyps[i],
                 "pred_audio": asr_hyps[i] if asr_hyps is not None else None,
-                "src_text": src_refs[i],
+                "src_text": src_refs[i] if src_refs is not None else "",
                 "pred_src_text": src_hyps[i] if src_hyps is not None and src_hyps[i] is not None else "",
                 "system_prompt": system_prompt[i] if system_prompt is not None and system_prompt[i] is not None else "",
                 "system_prompt_supervision_0": (
@@ -237,6 +287,11 @@ class ResultsLogger:
                 out_dict["conversation_turns"] = conversation_turns
             
             self.cached_results[name].append(out_dict)
+
+            # Write per-rank metadata immediately (mirrors old code behavior).
+            rank_json_path = os.path.join(self.metadata_save_path, f"{name}_rank{rank}.json")
+            with open(rank_json_path, 'a+', encoding='utf-8') as fout:
+                fout.write(json.dumps(out_dict, ensure_ascii=False) + '\n')
 
 
 

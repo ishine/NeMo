@@ -2057,7 +2057,6 @@ def collate_system_prompt(
     if debug_fc:
         logging.info(f"[Dataset] Collated system prompts: shape={tokens.shape}, lens={token_lens.tolist()[:5]}...")
     
-
     return tokens, token_lens, prompt_texts
 
 def build_token_channel(
