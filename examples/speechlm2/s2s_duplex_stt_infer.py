@@ -19,6 +19,7 @@ from omegaconf import OmegaConf
 
 from nemo.collections.speechlm2 import DataModule, DuplexS2SDataset, DuplexSTTModel
 from nemo.core.config import hydra_runner
+from nemo.utils import logging
 from nemo.utils.exp_manager import exp_manager
 from nemo.utils.trainer_utils import resolve_trainer_cfg
 
@@ -50,6 +51,11 @@ def inference(cfg):
             # Extract just the model config section
             model_config = OmegaConf.to_container(cfg.model) if hasattr(cfg, 'model') else {}
 
+    # Save merged config (checkpoint + inference overrides) as soon as model is ready
+    merged_config = OmegaConf.to_container(cfg, resolve=True)
+    merged_config["model"] = OmegaConf.to_container(model.cfg, resolve=True)
+    OmegaConf.save(OmegaConf.create(merged_config), log_dir / "merged_config.yaml")
+    logging.info("Saving merged config (from loaded model.cfg) to %s", log_dir / "merged_config.yaml")
 
     dataset = DuplexS2SDataset(
         tokenizer=model.tokenizer,
@@ -67,6 +73,8 @@ def inference(cfg):
     datamodule = DataModule(cfg.data, tokenizer=model.tokenizer, dataset=dataset)
 
     trainer.validate(model, datamodule)
+
+
 
 
 if __name__ == "__main__":

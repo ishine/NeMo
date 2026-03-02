@@ -496,6 +496,8 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
                     user_audio=dataset_batch["source_audio"],
                     user_audio_sr=self.source_sample_rate,
                     audio_lens=dataset_batch["source_audio_lens"] + input_pad_len,
+                    src_refs=dataset_batch.get("source_texts", None),
+                    src_hyps=results.get("src_text", None),
                     eou_pred=(
                         results["gen_eou"]
                         if "gen_eou" in results
@@ -504,6 +506,8 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
                     fps=self.source_fps,
                     results=results if self.cfg.get("dump_tokens_text", False) else None,
                     tokenizer=self.stt_model.tokenizer,
+                    system_prompt=dataset_batch.get("system_prompt", None),
+                    system_prompt_supervision_0=dataset_batch.get("system_prompt_supervision_0", None),
                     function_channel_text=function_channel_text,
                     function_channel_with_inserted_response=function_channel_with_inserted_response,
                     target_function_channel=target_function_channel,
@@ -617,8 +621,7 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         # Autoregressive loop
         for t in range(1, T):
             # do one step inference on Duplex STT model
-            _ = self.stt_model._step_inference(t, inference_state, ans, force_bos_positions)
-            ans = _ if isinstance(_, dict) else ans
+            ans = self.stt_model._step_inference(t, inference_state, ans, force_bos_positions)
 
             # do one step inference on Duplex TTS model
             # current subword id is always seem
