@@ -158,9 +158,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
             assert callable(self.language_model.get_input_embeddings)
             embed_tokens: nn.Embedding = self.language_model.get_input_embeddings()
         else:
-            embed_tokens_state_dict = torch.load(
-                cfg.pretrained_lm_embedding_path, map_location="cpu", weights_only=True
-            )
+            embed_tokens_state_dict = torch.load(cfg.pretrained_lm_embedding_path, map_location="cpu")
 
             # Create token embedding layer
             vocab_size, hidden_size = embed_tokens_state_dict["weight"].size()
@@ -658,7 +656,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
 
         results["audio"], results["audio_len"] = self.offline_inference(
             next_subword_ids=next_subword_ids,
-            formatter=dataset_batch["formatter"][0],
+            task=dataset_batch["task"][0],
             init_inputs=init_inputs,
         )
 
@@ -1087,7 +1085,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         self,
         next_subword_ids: torch.Tensor,
         init_inputs: dict,
-        formatter: str = "",
+        task: str = "",
         guidance_enabled: bool = True,
         generation_config: dict = None,
         incremental_audio_decoding: bool = False,
@@ -1118,8 +1116,8 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
                 ``get_init_inputs()`` automatically expands batch-1 buffers to
                 batch size B.
 
-            formatter (str, optional):
-                Optional formatter identifier used to customize the prompt structure.
+            task (str, optional):
+                Optional task identifier used to customize the prompt structure.
 
             guidance_enabled (bool, optional):
                 Whether classifier-free guidance (CFG) is enabled.
