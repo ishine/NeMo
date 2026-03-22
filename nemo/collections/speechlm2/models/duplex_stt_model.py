@@ -61,9 +61,21 @@ from nemo.collections.speechlm2.parts.pretrained import (
     load_pretrained_hf,
     set_model_dict_for_partial_init,
     setup_speech_encoder,
+    setup_rnnt_decoder_joint,
 )
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, NeuralType
 from nemo.utils import logging
+
+
+def _get_rnnt_decoding_module():
+    """Lazy import for RNNTDecoding and RNNTBPEDecoding (same stack as speech_to_text_streaming_infer)."""
+    from nemo.collections.asr.parts.submodules.rnnt_decoding import (
+        RNNTDecoding,
+        RNNTDecodingConfig,
+        RNNTBPEDecoding,
+        RNNTBPEDecodingConfig,
+    )
+    return RNNTDecoding, RNNTDecodingConfig, RNNTBPEDecoding, RNNTBPEDecodingConfig
 
 
 class ChannelEmbeddings(nn.Module):
@@ -107,11 +119,15 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         self.cfg = cfg.model
         self.target_sample_rate = cfg.data.target_sample_rate
         self.source_sample_rate = cfg.data.source_sample_rate
+        # LM / perception frame duration (seconds per frame); matches cfg.data.frame_length (e.g. 0.08)
+        self.lm_frame_duration_s = float(cfg.data.get("frame_length", 0.08))
         self.validation_save_path = os.path.join(cfg.exp_manager.explicit_log_dir, "validation_logs")
 
         self.advance_text_channel_by = self.cfg.get("advance_text_channel_by", None)
         self.predict_user_text = self.cfg.get("predict_user_text", False)
         self.predict_user_text_prob = self.cfg.get("predict_user_text_prob", 1.0)
+        self._agent_boosts_printed = False
+        self._user_boosts_printed = False
         
         # Embedding variants for differentiating agent vs user text channels
         # These are mutually exclusive with each other, and are bypassed for gated fusion methods
@@ -216,18 +232,20 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             function_weight=self.cfg.get("duplex_function_channel_weight", 1.0) if self.use_function_head else 0.0,
         )
 
-        # Initialize function calling head (optional; enable via use_function_head=True in config).
+        # Initialize function calling head (separate from text head)
         if self.use_function_head:
             self.function_head = copy.deepcopy(self.lm_head)
             logging.info("[Function Calling] Initialized separate function_head (shared embeddings with text channel)")
         else:
             self.function_head = None
-            logging.info("[Function Calling] function_head disabled (set use_function_head: true in config to enable)")
+            logging.info("[Function Calling] function_head DISABLED (use_function_head=False)")
 
         maybe_install_lora(self)
 
         # Load the pretrained streaming ASR model
         setup_speech_encoder(self)
+        # Optionally load RNNT decoder and joint (set pretrained_rnnt_asr in config)
+        setup_rnnt_decoder_joint(self)
 
         if self.cfg.get("pretrained_perception_from_s2s", None):
             self.init_perception_from_another_s2s_checkpoint(self.cfg.pretrained_perception_from_s2s)
@@ -427,6 +445,9 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 text_logits[:, :, self.text_bos_id] += self.cfg.inference_bos_boost
             if self.cfg.get("inference_eos_boost", None):
                 text_logits[:, :, self.text_eos_id] += self.cfg.inference_eos_boost
+            if not self._agent_boosts_printed:
+                print('using agent boosts:', self.cfg.inference_pad_boost, self.cfg.inference_bos_boost, self.cfg.inference_eos_boost)
+                self._agent_boosts_printed = True
             
             if compute_asr:
                 if self.cfg.get("inference_user_pad_boost", None):
@@ -436,6 +457,9 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 if self.cfg.get("inference_user_eos_boost", None):
                     asr_logits[:, :, self.text_eos_id] += self.cfg.inference_user_eos_boost
                     # asr_logits[:, :, self.user_eos_id] += self.cfg.inference_user_eos_boost
+                if not self._user_boosts_printed:
+                    print('using user boosts:', self.cfg.inference_user_pad_boost, self.cfg.inference_user_bos_boost, self.cfg.inference_user_eos_boost)
+                    self._user_boosts_printed = True
 
         ans = {"text_logits": text_logits, "function_logits": function_logits}
         if compute_asr:
@@ -641,9 +665,13 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                         wrapped_call_text = self.tokenizer.ids_to_text(wrapped_call.tolist())
                         logging.info(f"[FC Model] Batch {b}, Turn {turn_idx}: Call at step {call_step_adjusted} (original={call_step_original}, offset={prompt_offset}), length {len(wrapped_call)}, wrapped_call: {wrapped_call}, wrapped_call_text: {wrapped_call_text}")
                 
-                # Process function response
-                response_step_original = function_response_steps[b, turn_idx].item()
-                response_length = function_response_lengths[b, turn_idx].item()
+                # Process function response (bounds check: response can have fewer slots than calls)
+                if turn_idx >= function_response_lengths.shape[1]:
+                    response_step_original = -1
+                    response_length = 0
+                else:
+                    response_step_original = function_response_steps[b, turn_idx].item()
+                    response_length = max(0, function_response_lengths[b, turn_idx].item())  # -1 = pad
                 
                 if response_step_original >= 0 and response_length > 0:
                     # IMPORTANT: Add prompt offset to get position in current coordinate space
@@ -1524,7 +1552,8 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         # in the same collectives (avoid NCCL timeout). With mixed batch types across ranks (e.g. one rank normal
         # non-FC, another FC or minimal), every rank must run the same all_reduce/dummy path; when this rank has
         # normal non-FC we go through the expansion path with empty insertion_positions (sync only, tensors unchanged).
-        if has_fc or is_minimal_batch or (torch.distributed.is_initialized() and not has_fc):
+        # Skip entirely when function head is disabled — no FC batches or collectives needed.
+        if self.use_function_head and (has_fc or is_minimal_batch or (torch.distributed.is_initialized() and not has_fc)):
             # Compute subsampling factor (needed for sync and for expansion)
             audio_lens = batch["source_audio_lens"]
             subsampling_factors = []
@@ -1554,17 +1583,12 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 elif is_minimal_batch_non_fc:
                     logging.info("[FC Model] is_minimal_batch_non_fc=True (e.g. all-cuts-filtered, force-align failed); using sync-only path.")
                 self._sync_fc_insertions_collective(0, subsampling_factor)
-                # When function head is enabled, keep schema consistent with FC path (all PAD, no loss).
-                # When disabled, leave function_channel None so fusion and prepare_labels skip function branch.
-                if self.use_function_head:
-                    B, T = target_tokens.shape
-                    function_channel = torch.full((B, T), self.text_pad_id, dtype=torch.long, device=target_tokens.device)
-                    function_channel_loss_mask = torch.zeros((B, T), dtype=torch.bool, device=target_tokens.device)
-                    insertion_positions = [[] for _ in range(B)]
-                else:
-                    function_channel = None
-                    function_channel_loss_mask = None
-                    insertion_positions = [[] for _ in range(target_tokens.shape[0])]
+                # Keep schema consistent with FC path: build a neutral function channel tensor
+                # (all PAD, no loss) so downstream/debug logic does not see None.
+                B, T = target_tokens.shape
+                function_channel = torch.full((B, T), self.text_pad_id, dtype=torch.long, device=target_tokens.device)
+                function_channel_loss_mask = torch.zeros((B, T), dtype=torch.bool, device=target_tokens.device)
+                insertion_positions = [[] for _ in range(B)]
             else:
                 if has_fc and self.cfg.get("debug_fc", False):
                     logging.info(f"[FC Model] ============================================================")
@@ -1588,16 +1612,10 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 else:
                     B = target_tokens.shape[0]
                     T = target_tokens.shape[1]
-                    # Non-FC batch: when function head enabled, supervise function channel to stay PAD.
-                    # When disabled, leave function_channel None so fusion gets function_embeds=None.
-                    if self.use_function_head:
-                        function_channel = torch.full((B, T), self.text_pad_id, dtype=torch.long, device=target_tokens.device)
-                        function_channel_loss_mask = torch.ones((B, T), dtype=torch.bool, device=target_tokens.device)
-                        insertion_positions = [[] for _ in range(B)]
-                    else:
-                        function_channel = None
-                        function_channel_loss_mask = None
-                        insertion_positions = [[] for _ in range(B)]
+                    # Non-FC batch: supervise function channel to stay PAD.
+                    function_channel = torch.full((B, T), self.text_pad_id, dtype=torch.long, device=target_tokens.device)
+                    function_channel_loss_mask = torch.ones((B, T), dtype=torch.bool, device=target_tokens.device)
+                    insertion_positions = [[] for _ in range(B)]
                 
                 if self.cfg.get("debug_fc", False):
                     logging.info(f"[FC Model] Computed subsampling factor: {subsampling_factor:.2f} (avg of {len(subsampling_factors)} samples)")
@@ -1792,7 +1810,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 logging.info(f"[FC Model] ============================================================")
         
         # Optional function channel embeddings (fusion module applies weight internally)
-        if function_inputs is not None:
+        if function_inputs is not None and self.use_function_head:
             if function_inputs.shape != text_inputs.shape:
                 raise ValueError(
                     f"Shape mismatch after insertion and temporal shifts: function_inputs {function_inputs.shape} "
@@ -1890,8 +1908,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 # Re-apply seq_mask for ASR loss scale too
                 asr_loss_scale = asr_loss_scale * seq_mask
 
-        # Function calling loss scale (only when function head enabled: function_channel and thus
-        # function_loss_mask are created in prepare_inputs; otherwise both stay None and are not added to ans)
+        # Function calling loss scale
         function_loss_scale = None
         if function_loss_mask is not None:
             # Use the already-shifted mask from prepare_labels
@@ -2002,6 +2019,9 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
                 # Function calling loss (use separate head if available)
                 function_loss = torch.tensor(0.0, device=text_loss.device)
+                function_sotc_acc = torch.tensor(0.0, device=text_loss.device)
+                function_eotc_acc = torch.tensor(0.0, device=text_loss.device)
+                function_eotr_acc = torch.tensor(0.0, device=text_loss.device)
                 if not self.use_function_head:
                     # Function head disabled — skip all FC loss computation
                     pass
@@ -2108,6 +2128,26 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                                 fc_correct = (function_predicted_tokens == function_target_tokens) & fc_valid_mask
                                 fc_accuracy = fc_correct.sum().float() / fc_valid_mask.sum().float()
                                 logging.info(f"[FC Model Training]   Function call token accuracy: {fc_accuracy.item():.4f}")
+
+                    # SOTC / EOTC / EOTR accuracy (at positions where target is that token); only when use_function_head.
+                    with torch.no_grad():
+                        function_predicted_tokens = torch.argmax(function_logits, dim=-1)  # (B, T)
+                        flabels = inputs["function_labels"]
+                        n_sotc = (flabels == sotc_id).sum().item()
+                        n_eotc = (flabels == eotc_id).sum().item()
+                        n_eotr = (flabels == eotr_id).sum().item()
+                        function_sotc_acc = (
+                            ((function_predicted_tokens == sotc_id) & (flabels == sotc_id)).sum().float() / n_sotc
+                            if n_sotc > 0 else torch.tensor(0.0, device=function_logits.device)
+                        )
+                        function_eotc_acc = (
+                            ((function_predicted_tokens == eotc_id) & (flabels == eotc_id)).sum().float() / n_eotc
+                            if n_eotc > 0 else torch.tensor(0.0, device=function_logits.device)
+                        )
+                        function_eotr_acc = (
+                            ((function_predicted_tokens == eotr_id) & (flabels == eotr_id)).sum().float() / n_eotr
+                            if n_eotr > 0 else torch.tensor(0.0, device=function_logits.device)
+                        )
                 elif self.use_function_head:
                     # use_function_head=True but no function_labels
                     function_logits = forward_outputs["function_logits"]
@@ -2171,6 +2211,10 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                     if self.predict_user_text and compute_asr:
                         asr_loss = asr_loss * 0.0
                     function_loss = function_loss * 0.0
+                    if self.use_function_head:
+                        function_sotc_acc = function_sotc_acc * 0.0
+                        function_eotc_acc = function_eotc_acc * 0.0
+                        function_eotr_acc = function_eotr_acc * 0.0
                     if self.cfg.get("debug_fc", False):
                         logging.info("[Training] Minimal batch detected: zeroing text/asr/function losses.")
 
@@ -2179,8 +2223,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 if compute_asr:
                     loss = loss + self.cfg.get('asr_loss_weight', 1.0) * asr_loss
                 
-                # Add function loss only when function head is enabled and labels exist.
-                # When use_function_head=False, function_loss stays 0 and is not added.
+                # Always connect function branch into the final loss when labels exist.
                 # For minimal batches, function_loss is already zeroed above, so this keeps
                 # autograd/FSDP graph parity across ranks without updating on fake labels.
                 if self.use_function_head and "function_labels" in inputs and inputs["function_labels"] is not None:
@@ -2199,6 +2242,10 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 }
                 if compute_asr:
                     ans["asr_loss"] = asr_loss
+                if self.use_function_head:
+                    ans["function_sotc_acc"] = function_sotc_acc
+                    ans["function_eotc_acc"] = function_eotc_acc
+                    ans["function_eotr_acc"] = function_eotr_acc
 
                 res.update(ans)
 
@@ -2235,19 +2282,27 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             self.early_interruption_attempted += early_interruption_stats["batch_attempted"]
             self.early_interruption_successful += early_interruption_stats["batch_successful"]
 
-        # Always execute this sync_dist log so all ranks participate in the same collectives,
-        # even when some ranks only see FC/minimal batches and do not update EI counters.
+        # When function head is active, always execute this sync_dist log so all ranks participate
+        # in the same collectives, even when some ranks only see FC/minimal batches.
+        # When function head is disabled, use conditional logging to avoid unnecessary NCCL sync.
         early_interruption_successful_ratio = (
             self.early_interruption_successful / self.early_interruption_total
             if self.early_interruption_total > 0
             else 0.0
         )
-        self.log(
-            "early_interruption_successful_ratio",
-            early_interruption_successful_ratio,
-            on_step=True,
-            sync_dist=True,
-        )
+        if self.use_function_head:
+            self.log(
+                "early_interruption_successful_ratio",
+                early_interruption_successful_ratio,
+                on_step=True,
+                sync_dist=True,
+            )
+        elif self.early_interruption_total > 0:
+            self.log(
+                "early_interruption_successful_ratio",
+                early_interruption_successful_ratio,
+                on_step=True,
+            )
 
         # Track MCQ delay stats
         mcq_delay_stats = batch.get("mcq_delay_stats")
@@ -2279,6 +2334,9 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         self.bleu = BLEU().reset()
         # BLEU for "assistant response after TOOLRESPONSE": ref = extracted GT segment, hyp = full agent prediction
         self.bleu_after_tool = BLEU().reset()
+        # BLEU for tool/function calls: ref = target between SOTC and EOTC, hyp = predicted call content
+        if self.use_function_head:
+            self.bleu_tool_call = BLEU().reset()
 
         self.turn_taking_metrics = TurnTakingMetrics(
             eos_token_id=self.tokenizer.text_to_ids('$')[0],
@@ -2304,6 +2362,11 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         bleu_after_tool = self.bleu_after_tool.compute()
         after_tool_val = bleu_after_tool["txt_bleu"].to(self.device) if bleu_after_tool and "txt_bleu" in bleu_after_tool else torch.tensor(0.0, device=self.device)
         self.log(f"{prefix}_txt_bleu_after_tool", after_tool_val, on_epoch=True, sync_dist=True)
+
+        if self.use_function_head and getattr(self, "bleu_tool_call", None) is not None:
+            bleu_tool_call = self.bleu_tool_call.compute()
+            tool_call_val = bleu_tool_call["txt_bleu"].to(self.device) if bleu_tool_call and "txt_bleu" in bleu_tool_call else torch.tensor(0.0, device=self.device)
+            self.log(f"{prefix}_txt_bleu_tool_call", tool_call_val, on_epoch=True, sync_dist=True)
 
         acc_metrics = self.results_logger.compute_and_save()
 
@@ -2422,10 +2485,11 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
             pred_turns_list = self._split_agent_tokens_into_turns(results["tokens_text"])
 
-            # Decode function channel tokens to text (None when function head disabled)
+            # Decode function channel tokens to text
             function_channel_text = None
             function_channel_with_inserted_response = None
             function_call_positions = None
+            target_function_channel = None
             func_tokens_for_pred = results.get("tokens_function_pred", results.get("tokens_function", None))
             if func_tokens_for_pred is not None:
                 function_channel_text = tokens_to_str(
@@ -2439,6 +2503,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 )
 
                 # Also decode full function channel (includes prefilled responses) for debugging
+                function_channel_with_inserted_response = None
                 if results.get("tokens_function") is not None:
                     function_channel_with_inserted_response = tokens_to_str(
                         results["tokens_function"],
@@ -2512,6 +2577,19 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                         sample_id = dataset_batch['sample_id'][idx]
                         logging.info(f"  Sample {sample_id}: {target_fc_text}")
 
+            # BLEU for tool/function calls: ref = dataset function_call_raw_text (joined per sample), hyp = whole predicted function channel
+            if self.use_function_head and function_channel_text is not None:
+                target_fc_raw_text = dataset_batch.get("function_call_raw_text")
+                if target_fc_raw_text is not None:
+                    refs_filt, hyps_filt = [], []
+                    for ref_parts, hyp in zip(target_fc_raw_text, function_channel_text):
+                        ref = "".join(ref_parts) if isinstance(ref_parts, (list, tuple)) else (ref_parts or "")
+                        if ref and str(ref).strip():
+                            refs_filt.append(ref)
+                            hyps_filt.append(hyp if hyp is not None else "")
+                    if refs_filt and hyps_filt:
+                        self.bleu_tool_call.update(name=name, refs=refs_filt, hyps=hyps_filt)
+
             self.results_logger.update(
                 name=name,
                 refs=dataset_batch["target_texts"],
@@ -2525,6 +2603,8 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 user_audio_sr=self.source_sample_rate,
                 src_refs=dataset_batch["source_texts"],
                 src_hyps=results["src_text"],
+                src_hyps_asr_head=results.get("src_text_asr_head"),
+                src_hyps_rnnt=results.get("src_text_rnnt"),
                 system_prompt=dataset_batch.get("system_prompt", None),
                 system_prompt_supervision_0=dataset_batch.get("system_prompt_supervision_0", None),
                 source_turns=dataset_batch.get("source_turn_texts"),
@@ -3046,6 +3126,93 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         print(f"    input_signal shape: {input_signal.shape}")
         print(f"    source_encoded shape: {source_encoded.shape}")
 
+    def _get_rnnt_decoding(self):
+        """Lazy-build and cache NeMo RNNT decoding. Uses strategy 'greedy' for streaming (partial_hypotheses)."""
+        if getattr(self, "_rnnt_decoding", None) is not None:
+            return self._rnnt_decoding
+        if getattr(self, "rnnt_decoder", None) is None or getattr(self, "rnnt_joint", None) is None:
+            return None
+        strategy = "greedy"
+        (
+            RNNTDecoding,
+            RNNTDecodingConfig,
+            RNNTBPEDecoding,
+            RNNTBPEDecodingConfig,
+        ) = _get_rnnt_decoding_module()
+        decoding_cfg = OmegaConf.structured(RNNTBPEDecodingConfig())
+        decoding_cfg.strategy = strategy
+        decoding_cfg.greedy.max_symbols_per_step = self.cfg.get("rnnt_max_symbols_per_step", 10)
+        tokenizer = getattr(self, "rnnt_tokenizer", None)
+        if tokenizer is not None:
+            self._rnnt_decoding = RNNTBPEDecoding(
+                decoding_cfg=decoding_cfg,
+                decoder=self.rnnt_decoder,
+                joint=self.rnnt_joint,
+                tokenizer=tokenizer,
+            )
+            logging.info(
+                "Using RNNTBPEDecoding with ASR tokenizer (ids_to_text), strategy=%s (streaming).",
+                strategy,
+            )
+        else:
+            vocab = getattr(self.rnnt_joint, "vocabulary", None)
+            if vocab is None:
+                logging.warning("rnnt_joint has no vocabulary; cannot build RNNT decoding.")
+                return None
+            decoding_cfg_v = OmegaConf.structured(RNNTDecodingConfig())
+            decoding_cfg_v.strategy = strategy
+            decoding_cfg_v.greedy.max_symbols_per_step = self.cfg.get("rnnt_max_symbols_per_step", 10)
+            self._rnnt_decoding = RNNTDecoding(
+                decoding_cfg=decoding_cfg_v,
+                decoder=self.rnnt_decoder,
+                joint=self.rnnt_joint,
+                vocabulary=list(vocab),
+            )
+            logging.info(
+                "Using RNNTDecoding with vocabulary (no tokenizer); strategy=%s (streaming); "
+                "▁ normalized in _rnnt_hypotheses_to_src_text.",
+                strategy,
+            )
+        return self._rnnt_decoding
+
+    def _run_rnnt_decode_one_step(
+        self,
+        asr_emb_slice: torch.Tensor,
+        encoded_lengths: torch.Tensor,
+        previous_hypotheses: list,
+    ) -> list:
+        """
+        Run RNNT decoding on a single encoder frame (one asr_emb position), same cadence as asr_head in the loop.
+        asr_emb_slice: (B, 1, D); encoded_lengths: (B,) 0 or 1 per batch item.
+        Returns updated list of Hypothesis (one per batch item).
+        """
+        decoding = self._get_rnnt_decoding()
+        if decoding is None:
+            return previous_hypotheses if previous_hypotheses is not None else []
+        if encoded_lengths.max().item() <= 0:
+            return previous_hypotheses if previous_hypotheses is not None else []
+        encoder_output_bdt = asr_emb_slice.transpose(1, 2)  # (B, D, 1)
+        with torch.inference_mode():
+            hypotheses = decoding.rnnt_decoder_predictions_tensor(
+                encoder_output=encoder_output_bdt,
+                encoded_lengths=encoded_lengths,
+                return_hypotheses=True,
+                partial_hypotheses=previous_hypotheses,
+            )
+        return hypotheses if hypotheses is not None else (previous_hypotheses or [])
+
+    def _rnnt_hypotheses_to_src_text(self, hypotheses: list) -> list:
+        """Convert RNNT hypotheses to transcript strings. Normalize ▁ (U+2581) to space."""
+        import re
+        texts = []
+        for hyp in hypotheses:
+            raw = str(getattr(hyp, "text", "") or "").strip()
+            raw = raw.replace("\u2581", " ")
+            raw = re.sub(r" +", " ", raw).strip()
+            raw = re.sub(r"(\s+)([.,?])", r"\2", raw)
+            texts.append(raw)
+        return texts
+
     def _init_inference(
             self,
             input_signal: torch.Tensor,
@@ -3078,10 +3245,11 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             input_signal = torch.nn.functional.pad(input_signal, (0, input_pad_len), mode='constant', value=0)
             input_signal_lens = input_signal_lens + input_pad_len
 
+
         source_encoded, lengths, asr_emb = self.perception(
             input_signal=input_signal, input_signal_length=input_signal_lens, return_encoder_emb=True, sample_id=sample_id
         )
-        
+
         # Write debug information
         # self._write_debug_info(input_signal, source_encoded, sample_id)
 
@@ -3125,10 +3293,24 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 for i in range(min(B, 2)):
                     prompt_len = prompt_token_lens[i].item()
                     total_len = lengths[i].item()
-                    logging.info(f"[Inference Init] Sample {i}: prompt_len={prompt_len}, total_len={total_len}, audio_len={total_len - prompt_len}")
+                    logging.info(
+                        f"[Inference Init] Sample {i}: prompt_len={prompt_len}, total_len={total_len}, "
+                        f"non_prompt_frames={total_len - prompt_len}"
+                    )
 
             source_encoded = new_source_encoded
             T_local = source_encoded.shape[1]
+            # Align asr_emb to LM timeline: zeros over prompt, then acoustic encoder frames (same T as source_encoded).
+            D_asr = asr_emb.shape[-1]
+            new_asr = asr_emb.new_zeros(B, T_local, D_asr)
+            for i in range(B):
+                prompt_len = int(prompt_token_lens[i].item())
+                # How many perception encoder frames to copy: min(non-prompt LM span, frames available, room in new_asr row).
+                n = min(max(int(lengths[i].item()) - prompt_len, 0), asr_emb.shape[1], T_local - prompt_len)
+                if n > 0:
+                    # new_asr is already zeros (prompt + tail); copy only the acoustic span from perception.
+                    new_asr[i, prompt_len : prompt_len + n] = asr_emb[i, :n]
+            asr_emb = new_asr
 
         B, T_local, H = source_encoded.shape
 
@@ -3250,16 +3432,21 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         if self.cfg.get("debug_fc", False):
             logging.info("[Inference Init] Using ZERO embeddings for silence (testing mode)")
         
+        # Per-batch valid end on LM timeline (RNNT uses same t < asr_emb_lengths as before).
+        asr_emb_lengths = lengths.clone()
+
         return {
             "sil_id": sil_id,
             "input_signal": input_signal,
             "input_signal_lens": input_signal_lens,
             "asr_emb": asr_emb,
+            "asr_emb_lengths": asr_emb_lengths,
             "audio_embeds": audio_embeds,  # Store audio separately for fusion
             "lengths": lengths,
             "B": B,
             "T": T,
             "T_local": T_local,
+            "fc_expand_applied": False,
             "input_embeds": input_embeds,
             "cache": cache,
             "use_cache": use_cache,
@@ -3267,6 +3454,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             "gen_asr": gen_asr,
             "gen_function": gen_function,
             "start_gen_pos": start_gen_pos,
+            "prompt_token_lens": prompt_token_lens,
             "is_prompt_position_mask": is_prompt_position_mask,
             "sample_id": sample_id,
         }
@@ -3338,7 +3526,23 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
     def _step_inference(self, t, inference_state, ans, force_bos_positions):
         """Perform inference for one step t in the autoregressive loop."""
         B = inference_state["B"]
-        
+
+        # RNNT: consume one asr_emb frame per step (same cadence as asr_head), carry partial hypotheses.
+        if inference_state.get("_run_rnnt_in_loop") and t < inference_state["asr_emb"].shape[1]:
+            asr_emb = inference_state["asr_emb"]
+            asr_emb_lengths = inference_state["asr_emb_lengths"]
+            device = asr_emb.device
+            if asr_emb_lengths.dim() == 0:
+                enc_len = 1 if t < asr_emb_lengths.item() else 0
+                encoded_lengths = torch.full((B,), enc_len, device=device, dtype=torch.long)
+            else:
+                encoded_lengths = (t < asr_emb_lengths).long().to(device)
+            inference_state["rnnt_partial_hypotheses"] = self._run_rnnt_decode_one_step(
+                asr_emb[:, t : t + 1, :],
+                encoded_lengths,
+                inference_state.get("rnnt_partial_hypotheses"),
+            )
+
         # Get agent text embedding for the previous token
         agent_text_emb = self.embed_tokens(inference_state["gen_text"][:, t - 1]).unsqueeze(1)  # (B, 1, D)
         
@@ -3484,6 +3688,217 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             "eotr_id": eotr_id,
         }
 
+    def _expand_waveform_fc_timeline(
+        self,
+        inference_state: dict,
+        prompt_token_lens: torch.Tensor = None,
+    ):
+        """
+        Insert zeros into the raw user waveform at sample positions that match FC insertions in LM frame space.
+
+        _expand_for_function_calling shifts audio_embeds / gen_* along an expanded timeline but leaves
+        input_signal unchanged; logging would otherwise save a waveform that does not align in time with
+        the expanded token sequence (e.g. user content after an insertion appears "too early" in seconds).
+        """
+        if not inference_state.get("fc_expand_applied", False):
+            return inference_state["input_signal"], inference_state["input_signal_lens"]
+
+        events_per_batch = inference_state.get("fc_insertion_events")
+        lengths_pre_fc = inference_state.get("lengths_pre_fc")
+        if events_per_batch is None or lengths_pre_fc is None:
+            return inference_state["input_signal"], inference_state["input_signal_lens"]
+
+        B = inference_state["B"]
+        input_signal = inference_state["input_signal"]
+        input_signal_lens = inference_state["input_signal_lens"]
+        device = input_signal.device
+        dtype = input_signal.dtype
+        out_rows = []
+        out_lens = []
+
+        for b in range(B):
+            wav_len = int(input_signal_lens[b].item())
+            prompt_len = int(prompt_token_lens[b].item()) if prompt_token_lens is not None else 0
+            T_orig = int(lengths_pre_fc[b].item())
+            src_len = max(0, T_orig - prompt_len)
+            wave = input_signal[b, :wav_len].to(dtype=dtype)
+
+            def af_to_samp(a: int) -> int:
+                """Map audio-frame index in [0, src_len] to sample index in [0, wav_len]."""
+                if src_len <= 0:
+                    return 0
+                a = max(0, min(a, src_len))
+                if a >= src_len:
+                    return wav_len
+                return int(round(a * wav_len / src_len))
+
+            parts = []
+            current_lm = 0
+
+            for _event_idx, (insert_pos, space, tokens, event_type) in enumerate(events_per_batch[b]):
+                seg_lm = insert_pos - current_lm
+                if seg_lm > 0:
+                    ca = max(0, current_lm - prompt_len)
+                    ia = max(0, insert_pos - prompt_len)
+                    if ia > ca:
+                        parts.append(wave[af_to_samp(ca) : af_to_samp(ia)])
+
+                if event_type == "call":
+                    n_frames = int(space) if space is not None else 0
+                elif event_type == "response":
+                    n_frames = len(tokens) if tokens is not None else 0
+                elif event_type == "eotr":
+                    n_frames = int(space) if space is not None else 1
+                else:
+                    n_frames = 0
+
+                if n_frames > 0 and src_len > 0:
+                    ns = int(round(n_frames * wav_len / src_len))
+                    if ns > 0:
+                        parts.append(torch.zeros(ns, device=device, dtype=dtype))
+                current_lm = insert_pos
+
+            remaining_lm = T_orig - current_lm
+            if remaining_lm > 0:
+                ca = max(0, current_lm - prompt_len)
+                ia = src_len
+                if ia > ca:
+                    parts.append(wave[af_to_samp(ca) : af_to_samp(ia)])
+
+            if not parts:
+                out = wave
+            else:
+                out = torch.cat(parts, dim=0)
+
+            out_rows.append(out)
+            out_lens.append(int(out.numel()))
+
+        max_len = max(out_lens)
+        batch_out = torch.zeros(B, max_len, device=device, dtype=dtype)
+        new_lens = torch.zeros(B, dtype=torch.long, device=input_signal_lens.device)
+        for b, row in enumerate(out_rows):
+            l = row.numel()
+            batch_out[b, :l] = row
+            new_lens[b] = l
+
+        return batch_out, new_lens
+
+    def _fc_events_expanded_timeline_sec(
+        self,
+        events: list,
+    ) -> list[dict]:
+        """
+        Map ordered FC events to wall-clock [start_sec, end_sec) on the **expanded** LM timeline,
+        using the same frame walk as _expand_waveform_fc_timeline (seg_lm then silence frames).
+
+        Times are (expanded_lm_frame_index * lm_frame_duration_s).
+        """
+        fd = getattr(self, "lm_frame_duration_s", 0.08)
+        current_lm = 0
+        expanded_frame = 0
+        rows = []
+        for insert_pos, space, tokens, event_type in events:
+            seg_lm = insert_pos - current_lm
+            if seg_lm > 0:
+                expanded_frame += seg_lm
+            if event_type == "call":
+                n_frames = int(space) if space is not None else 0
+            elif event_type == "response":
+                n_frames = len(tokens) if tokens is not None else 0
+            elif event_type == "eotr":
+                n_frames = int(space) if space is not None else 1
+            else:
+                n_frames = 0
+            t0 = expanded_frame * fd
+            t1 = (expanded_frame + n_frames) * fd
+            rows.append(
+                {
+                    "event_type": event_type,
+                    "anchor_lm": int(insert_pos),
+                    "expanded_lm_start": int(expanded_frame),
+                    "n_lm_frames": int(n_frames),
+                    "start_sec": float(t0),
+                    "end_sec": float(t1),
+                }
+            )
+            expanded_frame += n_frames
+            current_lm = insert_pos
+        return rows
+
+    def _log_fc_insertion_timeline(
+        self,
+        insertion_events: list,
+        T_original: int,
+        prompt_token_lens: torch.Tensor,
+        inference_state: dict,
+    ) -> None:
+        """
+        Log tool-call vs tool-response insertion anchors (LM indices) and wall-clock times (frame * frame_length).
+        Rank 0 only; gated by cfg.fc_insertion_timeline_log (default True).
+        """
+        if not self.cfg.get("fc_insertion_timeline_log", False):
+            return
+        if not dist.is_available() or not dist.is_initialized():
+            rank = 0
+        else:
+            rank = dist.get_rank()
+        if rank != 0:
+            return
+
+        B = len(insertion_events)
+        fd = getattr(self, "lm_frame_duration_s", 0.08)
+        sr = getattr(self, "source_sample_rate", 16000)
+
+        for b in range(B):
+            evs = insertion_events[b]
+            if not evs:
+                continue
+
+            sid = None
+            raw_sid = inference_state.get("sample_id")
+            if raw_sid is not None:
+                if isinstance(raw_sid, (list, tuple)) and b < len(raw_sid):
+                    sid = raw_sid[b]
+                elif isinstance(raw_sid, torch.Tensor) and b < raw_sid.shape[0]:
+                    sid = raw_sid[b].item()
+                else:
+                    sid = raw_sid
+
+            pl = 0
+            if prompt_token_lens is not None:
+                pl = int(prompt_token_lens[b].item())
+
+            rows = self._fc_events_expanded_timeline_sec(evs)
+            logging.info(
+                "[FC insertion timeline] sample_id=%s batch=%d T_original=%d lm_frame_duration=%.4fs source_sr=%d "
+                "prompt_lm_frames=[0,%d) (~0.000s–%.3fs user-audio region follows prompt in raw wav)",
+                sid,
+                b,
+                T_original,
+                fd,
+                sr,
+                pl,
+                pl * fd,
+            )
+            for r in rows:
+                et = r["event_type"]
+                approx_s0 = int(round(r["start_sec"] * sr))
+                approx_s1 = int(round(r["end_sec"] * sr))
+                logging.info(
+                    "[FC insertion timeline]   %-9s expanded_LM [%5d, %5d)  time [%.3fs, %.3fs)  dur=%.3fs  "
+                    "(anchor_lm=%d)  ~samples [%d, %d) @ %d Hz",
+                    et,
+                    r["expanded_lm_start"],
+                    r["expanded_lm_start"] + r["n_lm_frames"],
+                    r["start_sec"],
+                    r["end_sec"],
+                    r["end_sec"] - r["start_sec"],
+                    r["anchor_lm"],
+                    approx_s0,
+                    approx_s1,
+                    sr,
+                )
+
     def _post_inference(self, inference_state, prompt_token_lens):
         """Post-process inference results and prepare output."""
         gen_text = inference_state["gen_text"]
@@ -3495,16 +3910,13 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         T = inference_state["T"]
         B = inference_state["B"]
 
-        # Trim to local expanded length first (mirrors old FSDP padding behavior)
-        if self._use_fsdp and inference_state.get("T_expanded_local") is not None:
-            local_len = inference_state["T_expanded_local"]
-            gen_text = gen_text[:, :local_len]
-            if gen_function is not None:
-                gen_function = gen_function[:, :local_len]
-            if self.predict_user_text:
-                gen_asr = gen_asr[:, :local_len]
-            # Keep lengths within local_len for decoding
-            lengths = torch.minimum(lengths, torch.tensor(local_len, device=lengths.device))
+        # FSDP + FC: T_local = local width before global MAX pad (refreshed in _expand_for_function_calling).
+        # fc_expand_applied is True only after FC timeline expand; then cap lengths to T_local.
+        if self._use_fsdp and inference_state.get("fc_expand_applied", False):
+            lengths = torch.minimum(
+                lengths,
+                torch.tensor(T_local, device=lengths.device, dtype=lengths.dtype),
+            )
 
         if self._use_fsdp and T > T_local:
             gen_text = gen_text[:, :T_local]
@@ -3512,35 +3924,68 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 gen_function = gen_function[:, :T_local]
             if self.predict_user_text:
                 gen_asr = gen_asr[:, :T_local]
+            lengths = torch.minimum(
+                lengths,
+                torch.tensor(T_local, device=lengths.device, dtype=lengths.dtype),
+            )
 
         if self.predict_user_text:
             gen_text_src = gen_asr
-            src_text_cleaned = tokens_to_str(gen_text_src, lengths, tokenizer=self.tokenizer, pad_id=self.text_pad_id, user_bos_id=self.user_bos_id, eval_text_turn_taking=self.cfg.get("eval_text_turn_taking", True), sil_id=inference_state["sil_id"])
         else:
             gen_text_src = None
-            src_text_cleaned = None
-        
+
+        # Drop the leading "system prompt" frames from outputs. The dataloader fills prompt_tokens
+        # from many sources (see collate_system_prompt in s2s_dataset.py): FC supervision[0], cut.custom
+        # system_prompt, MCQ/ASR/demo prompts, etc.). Inference only sees prompt_token_lens — same strip
+        # whether or not this batch used function calling.
         if prompt_token_lens is not None:
             max_prompt_len = prompt_token_lens.max().item()
             if max_prompt_len > 0:
                 current_T = gen_text.shape[1]
-                gen_text_trimmed = torch.zeros(B, current_T - max_prompt_len, device=self.device, dtype=torch.long)
-                gen_function_trimmed = torch.zeros(B, current_T - max_prompt_len, device=self.device, dtype=torch.long) if gen_function is not None else None
+                # Safeguard: cap lengths[i] at gen_text.shape[1] to prevent
+                # out-of-bounds indexing (invariant should already hold).
+                lengths = torch.minimum(
+                    lengths,
+                    torch.tensor(current_T, device=lengths.device, dtype=lengths.dtype),
+                )
+                # Each sample has a different prompt length, so the post-prompt content
+                # length varies per sample.  The trimmed output tensor must be wide enough
+                # to hold the longest one: max_i(lengths[i] - prompt_token_lens[i]).
+                max_trimmed_len = 0
+                for i in range(B):
+                    max_trimmed_len = max(
+                        max_trimmed_len,
+                        int(lengths[i].item()) - int(prompt_token_lens[i].item()),
+                    )
+                max_trimmed_len = max(0, min(max_trimmed_len, current_T))
+
+                gen_text_trimmed = torch.zeros(B, max_trimmed_len, device=self.device, dtype=torch.long)
+                gen_function_trimmed = (
+                    torch.zeros(B, max_trimmed_len, device=self.device, dtype=torch.long)
+                    if gen_function is not None
+                    else None
+                )
                 if self.predict_user_text:
-                    gen_asr_trimmed = torch.zeros(B, current_T - max_prompt_len, device=self.device, dtype=torch.long)
+                    gen_asr_trimmed = torch.zeros(B, max_trimmed_len, device=self.device, dtype=torch.long)
                 lengths_trimmed = lengths.clone()
 
-                for i, prompt_len in enumerate(prompt_token_lens):
-                    prompt_len_val = prompt_len.item()
-                    actual_len = lengths[i].item() - prompt_len_val
-                    if actual_len > 0:
-                        gen_text_trimmed[i, :actual_len] = gen_text[i, prompt_len_val:prompt_len_val + actual_len]
+                # Strip each sample's prompt prefix so output starts at the first real
+                # generated token (position 0).  copy_len = valid post-prompt frames,
+                # clamped to the source tensor width to avoid out-of-bounds reads.
+                for i, prompt_len_t in enumerate(prompt_token_lens):
+                    prompt_len = int(prompt_len_t.item())
+                    copy_len = min(
+                        max(0, int(lengths[i].item()) - prompt_len),
+                        current_T - prompt_len,
+                    )
+                    if copy_len > 0:
+                        gen_text_trimmed[i, :copy_len] = gen_text[i, prompt_len : prompt_len + copy_len]
                         if gen_function_trimmed is not None:
-                            gen_function_trimmed[i, :actual_len] = gen_function[i, prompt_len_val:prompt_len_val + actual_len]
+                            gen_function_trimmed[i, :copy_len] = gen_function[i, prompt_len : prompt_len + copy_len]
                         if self.predict_user_text:
-                            gen_asr_trimmed[i, :actual_len] = gen_asr[i, prompt_len_val:prompt_len_val + actual_len]
-                    lengths_trimmed[i] = actual_len
-                
+                            gen_asr_trimmed[i, :copy_len] = gen_asr[i, prompt_len : prompt_len + copy_len]
+                    lengths_trimmed[i] = copy_len
+
                 gen_text = gen_text_trimmed
                 if gen_function_trimmed is not None:
                     gen_function = gen_function_trimmed
@@ -3552,16 +3997,30 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                     # Shift response spans to match prompt-trimmed coordinates
                     shifted_spans = [[] for _ in range(B)]
                     for i, spans in enumerate(response_spans):
-                        prompt_len_val = prompt_token_lens[i].item()
+                        prompt_len = int(prompt_token_lens[i].item())
                         for start, end in spans:
-                            start_shifted = start - prompt_len_val
-                            end_shifted = end - prompt_len_val
+                            start_shifted = start - prompt_len
+                            end_shifted = end - prompt_len
                             if end_shifted <= 0:
                                 continue
                             if start_shifted < 0:
                                 start_shifted = 0
                             shifted_spans[i].append((start_shifted, end_shifted))
                     response_spans = shifted_spans
+
+        # Compute ASR text fields after all trimming so we use final gen_text_src and lengths
+        if self.predict_user_text and gen_text_src is not None:
+            src_text_asr_head = tokens_to_str(gen_text_src, lengths, tokenizer=self.tokenizer, pad_id=self.text_pad_id, user_bos_id=self.user_bos_id, eval_text_turn_taking=self.cfg.get("eval_text_turn_taking", True), sil_id=inference_state["sil_id"])
+            if inference_state.get("rnnt_src_text") is not None:
+                src_text_cleaned = inference_state["rnnt_src_text"]
+                src_text_rnnt = inference_state["rnnt_src_text"]
+            else:
+                src_text_cleaned = src_text_asr_head
+                src_text_rnnt = None
+        else:
+            src_text_cleaned = None
+            src_text_asr_head = None
+            src_text_rnnt = None
 
         # Build function-channel predictions with prefilled responses masked out
         gen_function_pred = gen_function
@@ -3574,17 +4033,24 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                     if end_idx > start_idx:
                         gen_function_pred[b, start_idx:end_idx] = self.text_pad_id
 
+        # Align saved user WAV with expanded LM timeline when FC insertions shifted audio_embeds.
+        source_audio_out, source_audio_len_out = self._expand_waveform_fc_timeline(
+            inference_state, prompt_token_lens
+        )
+
         ans = {
             "text": tokens_to_str(gen_text, lengths, tokenizer=self.tokenizer, pad_id=self.text_pad_id, user_bos_id=self.user_bos_id, eval_text_turn_taking=self.cfg.get("eval_text_turn_taking", True), sil_id=inference_state["sil_id"]),
             "src_text": src_text_cleaned,
+            "src_text_asr_head": src_text_asr_head,
+            "src_text_rnnt": src_text_rnnt,
             "tokens_text_src": gen_text_src,
             "tokens_text": gen_text,
             "tokens_function": gen_function,
             "tokens_function_pred": gen_function_pred,
             "tokens_audio": None,
             "tokens_len": lengths,
-            "source_audio": inference_state["input_signal"],
-            "source_audio_len": inference_state["input_signal_lens"],
+            "source_audio": source_audio_out,
+            "source_audio_len": source_audio_len_out,
         }
 
         return ans
@@ -3632,25 +4098,26 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         B = inference_state["B"]
         T_original = inference_state["T"]
         device = inference_state["gen_text"].device
-
+        
         # Calculate total expansion from ground truth
+        # collate_and_pad_1d uses pad_id=-1; clamp so padding does not reduce expansion
         if function_response_lengths is not None:
-            response_expansion_per_batch = function_response_lengths.sum(dim=1)  # [B]
+            response_expansion_per_batch = function_response_lengths.clamp(min=0).sum(dim=1)  # [B]
             num_responses_per_batch = (function_response_lengths > 0).sum(dim=1)  # [B]
-            response_expansion_per_batch = response_expansion_per_batch + num_responses_per_batch  # Add EOTR tokens
+            response_expansion_per_batch += num_responses_per_batch  # Add EOTR tokens
         else:
             # Call-only: no response pre-fill or EOTR
             response_expansion_per_batch = torch.zeros(B, dtype=torch.long, device=device)
             num_responses_per_batch = torch.zeros(B, dtype=torch.long, device=device)
-
+        
         if function_call_lengths is not None:
-            call_expansion_per_batch = function_call_lengths.sum(dim=1)  # [B]
+            call_expansion_per_batch = function_call_lengths.clamp(min=0).sum(dim=1)  # [B]; -1 = pad (collate_and_pad_1d)
             num_calls_per_batch = (function_call_lengths > 0).sum(dim=1)  # [B]
             call_expansion_per_batch += num_calls_per_batch * 2  # Add SOTC + EOTC tokens
         else:
             logging.warning("[Expand FC] function_call_lengths not provided, using conservative estimate")
             call_expansion_per_batch = num_responses_per_batch * 50
-
+        
         total_expansion_per_batch = response_expansion_per_batch + call_expansion_per_batch
         total_expansion = total_expansion_per_batch.max().item()
         T_expanded = T_original + total_expansion
@@ -3660,11 +4127,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         # If T_expanded differs across ranks, some ranks will finish early and others will hang
         # during FSDP all_gather. Synchronize to the global max T_expanded.
         if dist.is_initialized():
-            T_tensor = torch.tensor(
-                [T_expanded],
-                device=device if "device" in locals() else inference_state["gen_text"].device,
-                dtype=torch.int32,
-            )
+            T_tensor = torch.tensor([T_expanded], device=device, dtype=torch.int32)
             dist.all_reduce(T_tensor, op=dist.ReduceOp.MAX)
             T_expanded = int(T_tensor.item())
         
@@ -3672,7 +4135,6 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             logging.info(f"[Expand FC] T_original={T_original}, expansion={total_expansion}, T_expanded={T_expanded}")
         
         # Pre-allocate expanded tensors
-        device = inference_state["gen_text"].device
         dtype = inference_state["gen_text"].dtype
         H = inference_state["input_embeds"].shape[2]
         
@@ -3695,12 +4157,15 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         else:
             gen_asr_expanded = None
         
+        # Per-batch valid length on the expanded LM timeline (exclusive end index). RNNT uses t < asr_emb_lengths;
+        # must match actual T_original + inserted tokens for each batch (may be < global T_expanded after dist pad).
+        expanded_seq_lens = torch.zeros(B, dtype=torch.long, device=device)
+        
         # Build insertion plan for each batch
         insertion_events = []
         response_spans = [[] for _ in range(B)]  # expanded-space spans for response tokens
         for b in range(B):
             expansion_plan = []
-            # No call lengths => no calls and no responses; use only function_call_lengths for num_calls.
             if function_call_lengths is not None:
                 num_calls = function_call_lengths.shape[1] if len(function_call_lengths.shape) > 1 else 1
             else:
@@ -3720,10 +4185,12 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             
             for call_idx in range(num_calls):
                 # Note: in the dataset both function call and function responses has the same insertion step because it use the same start time in seconds
-                if function_response_lengths is not None:
-                    response_len = function_response_lengths[b, call_idx].item() if len(function_response_lengths.shape) > 1 else function_response_lengths[b].item()
+                # Call-only: response length is 0; response padding is -1 (collate_and_pad_1d). Some cuts have more calls than responses, so function_response_lengths.shape[1] can be < function_call_lengths.shape[1]; bounds check required.
+                if len(function_response_lengths.shape) > 1:
+                    raw = function_response_lengths[b, call_idx].item() if call_idx < function_response_lengths.shape[1] else 0
                 else:
-                    response_len = 0
+                    raw = function_response_lengths[b].item() if b < function_response_lengths.shape[0] else 0
+                response_len = max(0, raw)  # -1 means no response (padded)
                 insertion_step = function_call_steps[b, call_idx].item() if len(function_call_steps.shape) > 1 else function_call_steps[b].item()
                 
                 if insertion_step < 0:
@@ -3736,11 +4203,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 # Track position as we add events (call -> response -> eotr)
                 current_insertion_pos = insertion_step_with_prompt
                 
-                call_len = (
-                    function_call_lengths[b, call_idx].item()
-                    if function_call_lengths is not None and len(function_call_lengths.shape) > 1
-                    else 0
-                )
+                call_len = function_call_lengths[b, call_idx].item() if len(function_call_lengths.shape) > 1 else 0
                 if self.cfg.get("fc_log", False):
                     logging.info(f"[FC Expand DEBUG] Batch {b}, Call {call_idx}: call_len={call_len}, function_call_lengths shape={function_call_lengths.shape if function_call_lengths is not None else 'None'}")
                 
@@ -3751,9 +4214,10 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                     if b == 0 and self.cfg.get("fc_log", False):
                         logging.info(f"[FC Expand] Call {call_idx}: position={current_insertion_pos}, space={call_space} (call_len={call_len})")
                 else:
-                    # Response-only or zero-length call: no call space; only response/EOTR will be inserted.
-                    if self.cfg.get("fc_log", False) and function_call_lengths is not None:
-                        logging.warning(f"[FC Expand] Batch {b}, Call {call_idx}: no call space (call_len={call_len})")
+                    if self.cfg.get("fc_log", False):
+                        logging.error(f"[FC Expand BUG] Batch {b}, Call {call_idx}: NO SPACE RESERVED FOR CALL! call_len={call_len}, function_call_lengths={'None' if function_call_lengths is None else 'provided'}")
+                    if b == 0 and self.cfg.get("fc_log", False):
+                        logging.error(f"[FC Expand BUG] This means response tokens will be placed at position {current_insertion_pos} with NO call tokens before them!")
                     call_space = 0
                 
                 # Pre-fill response
@@ -3790,21 +4254,9 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             if gen_asr_expanded is not None:
                 original_asr = inference_state["gen_asr"][b]
             if asr_emb_expanded is not None:
+                # asr_emb already shares LM timeline after _init_inference (prompt region padded).
                 original_asr_emb = inference_state["asr_emb"][b]
-                if prompt_token_lens is not None:
-                    prompt_len = prompt_token_lens[b].item()
-                    if prompt_len > 0:
-                        aligned_asr = torch.zeros(
-                            T_original,
-                            original_asr_emb.shape[1],
-                            device=original_asr_emb.device,
-                            dtype=original_asr_emb.dtype,
-                        )
-                        copy_len = min(original_asr_emb.shape[0], T_original - prompt_len)
-                        if copy_len > 0:
-                            aligned_asr[prompt_len:prompt_len + copy_len] = original_asr_emb[:copy_len]
-                        original_asr_emb = aligned_asr
-            
+
             current_pos = 0
             offset = 0
             
@@ -3976,6 +4428,11 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 if b == 0 and self.cfg.get("fc_log", False):
                     logging.info(f"[FC Expand] Copied remaining original[{current_pos}:{T_original}] → expanded[{new_start}:{new_end}]")
             
+            # New valid length for this sample = original length + total inserted frames.
+            # This updates inference_state["lengths"] so downstream code (trimming,
+            # audio decode, logging) knows where valid data ends after expansion.
+            expanded_seq_lens[b] = T_original + offset
+            
             if b == 0 and self.cfg.get("fc_log", False):
                 logging.info(f"[FC Expand] Batch {b}: Final expanded length = {T_expanded}, offset = {offset}")
                 # Show what's in gen_function_expanded
@@ -4000,8 +4457,15 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             inference_state["gen_asr"] = gen_asr_expanded
         if asr_emb_expanded is not None:
             inference_state["asr_emb"] = asr_emb_expanded
+        inference_state["lengths"] = expanded_seq_lens.clone()
+        if inference_state.get("asr_emb_lengths") is not None:
+            inference_state["asr_emb_lengths"] = expanded_seq_lens.clone()
         inference_state["T"] = T_expanded
-        inference_state["T_expanded_local"] = T_expanded_local
+        inference_state["fc_expand_applied"] = True
+        # T_local = local LM width after FC insertions (before optional FSDP global MAX pad).
+        # Must refresh on every path — not only FSDP — so consumers (e.g. NemotronVoiceChat
+        # TTS decode using effective_len=T_local) do not truncate with a stale pre-expand T_local.
+        inference_state["T_local"] = T_expanded_local
         inference_state["function_response_spans"] = response_spans
         
         if self.cfg.get("debug_fc", False):
@@ -4033,6 +4497,14 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 )
                 logging.info(f"[FC Expand] Insertion plan (original space) batch {b}: {insertion_events[b]}")
                 logging.info(f"[FC Expand] Response spans (expanded space) batch {b}: {response_spans[b]}")
+        # For logging: mirror this plan in sample space in _expand_waveform_fc_timeline (saved user WAV).
+        self._log_fc_insertion_timeline(
+            insertion_events,
+            T_original,
+            prompt_token_lens,
+            inference_state,
+        )
+        inference_state["fc_insertion_events"] = insertion_events
         return inference_state
 
     @torch.no_grad()
@@ -4059,12 +4531,11 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         For function calling: expansion/pre-filling is handled by helper function.
         """
         if self.cfg.get("fc_log", False):
-            has_call = function_call_lengths is not None and function_call_steps is not None
             logging.info(f"╔═══ [OFFLINE_INFERENCE CALLED] ═══╗")
             logging.info(f"║ function_responses: {function_responses.shape if function_responses is not None else 'None'}")
             logging.info(f"║ function_response_lengths: {function_response_lengths.shape if function_response_lengths is not None else 'None'}")
             logging.info(f"║ function_call_steps: {function_call_steps.shape if function_call_steps is not None else 'None'}")
-            logging.info(f"║ Will expand when use_function_head and has_call: {has_call}")
+            logging.info(f"║ Will call _expand_for_function_calling: {function_responses is not None and function_response_lengths is not None}")
             logging.info(f"╚══════════════════════════════════╝")
         
         # Initialize inference state (basic setup)
@@ -4072,29 +4543,62 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             input_signal, input_signal_lens, input_pad_len,
             force_bos_positions, prompt_tokens, prompt_token_lens, sample_id
         )
-        
-        # Expand for function calling when function head is enabled and we have call data. There is
-        # no "response without call" case. Call-only (call but no response) is valid: we only
-        # reserve call space; no response tensors needed.
-        if self.use_function_head:
-            has_call = function_call_lengths is not None and function_call_steps is not None
-            if has_call:
-                inference_state = self._expand_for_function_calling(
-                    inference_state,
-                    function_call_lengths=function_call_lengths,
-                    function_responses=function_responses,
-                    function_response_lengths=function_response_lengths,
-                    function_response_steps=function_response_steps,
-                    function_call_steps=function_call_steps,
-                    prompt_token_lens=prompt_token_lens,
-                )
-        
+
+        # RNNT for ASR branch: run one asr_emb frame per step in the loop (streaming, same cadence as asr_head).
+        inference_state["rnnt_src_text"] = None
+        asr_branch_decode = self.cfg.get("asr_branch_decode", False)
+        if isinstance(asr_branch_decode, str):
+            asr_branch_decode = asr_branch_decode.strip().lower() in ("true", "1", "yes")
+        if asr_branch_decode and self.predict_user_text:
+            rnnt_dec = getattr(self, "rnnt_decoder", None)
+            rnnt_joint = getattr(self, "rnnt_joint", None)
+            if rnnt_dec is not None and rnnt_joint is not None:
+                inference_state["_run_rnnt_in_loop"] = True
+                inference_state["rnnt_partial_hypotheses"] = None
+            else:
+                inference_state["_run_rnnt_in_loop"] = False
+        else:
+            inference_state["_run_rnnt_in_loop"] = False
+
+        # FC expand: shift LM/asr_emb timelines when we have GT call placement (lengths + steps). Runs for
+        # call-only batches too (responses may be None); updates lengths/asr_emb_lengths/T_local after expand.
+        if self.use_function_head and function_call_lengths is not None and function_call_steps is not None:
+            inference_state["lengths_pre_fc"] = inference_state["lengths"].clone()
+            inference_state = self._expand_for_function_calling(
+                inference_state,
+                function_call_lengths=function_call_lengths,
+                function_responses=function_responses,
+                function_response_lengths=function_response_lengths,
+                function_response_steps=function_response_steps,
+                function_call_steps=function_call_steps,
+                prompt_token_lens=prompt_token_lens,
+            )
+
         # Simple generation loop (same as original)
         ans, inference_state = self._step_zero(inference_state)
-        
+
+        # RNNT step for t=0 (loop starts at t=1, so consume first asr_emb frame here)
+        if inference_state.get("_run_rnnt_in_loop") and inference_state["asr_emb"].shape[1] > 0:
+            asr_emb = inference_state["asr_emb"]
+            asr_emb_lengths = inference_state["asr_emb_lengths"]
+            B = inference_state["B"]
+            device = asr_emb.device
+            if asr_emb_lengths.dim() == 0:
+                enc_len = 1 if 0 < asr_emb_lengths.item() else 0
+                encoded_lengths = torch.full((B,), enc_len, device=device, dtype=torch.long)
+            else:
+                encoded_lengths = (0 < asr_emb_lengths).long().to(device)
+            inference_state["rnnt_partial_hypotheses"] = self._run_rnnt_decode_one_step(
+                asr_emb[:, 0:1, :], encoded_lengths, inference_state.get("rnnt_partial_hypotheses")
+            )
+
         for t in range(1, inference_state["T"]):
             ans = self._step_inference(t, inference_state, ans, force_bos_positions)
-        
+
+        # Build final RNNT transcript from partial hypotheses (one asr_emb frame consumed per step).
+        if inference_state.get("rnnt_partial_hypotheses") is not None:
+            inference_state["rnnt_src_text"] = self._rnnt_hypotheses_to_src_text(inference_state["rnnt_partial_hypotheses"])
+
         return self._post_inference(inference_state, prompt_token_lens)
 
     def _extract_online_audio_window(
@@ -4418,6 +4922,11 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             # Function calling uses shared embeddings, only shard the head
             if self.use_function_head:
                 self.function_head = fully_shard(self.function_head, **fsdp_config)
+
+            # Shard RNNT decoder and joint when loaded from pretrained ASR (e.g. RNNT checkpoint)
+            if getattr(self, "rnnt_decoder", None) is not None and getattr(self, "rnnt_joint", None) is not None:
+                self.rnnt_decoder = fully_shard(self.rnnt_decoder, **fsdp_config)
+                self.rnnt_joint = fully_shard(self.rnnt_joint, **fsdp_config)
 
     def load_state_dict(self, state_dict, strict: bool = True):
         try:

@@ -48,6 +48,21 @@ _ROMAN = {"I":1,"V":5,"X":10,"L":50,"C":100,"D":500,"M":1000}
 ASR_SYSTEM_PROMPT = "Transcribe the following speech to text."
 MCQ_SYSTEM_PROMPT_DELAY = "Think longer to give a more accurate answer"
 MCQ_SYSTEM_PROMPT_MCQ = "Answer the following multiple choice question."
+
+DEMO_VAL_PROMPT = (
+    "You are an AI voice assistant developed by NVIDIA. Your name is NVIDIA VoiceChat. "
+    "Your job is to be helpful and harmless and have engaging conversations in English. "
+    "Maintain a warm and friendly tone. Keep the dialogue open and ongoing. "
+    "Be clear and direct, especially when answering yes or no questions and multiple-choice questions. "
+    "Avoid long answers unless the user asks you to provide details or context, or the user asks you to explain "
+    "your reasoning, or you need to elaborate for better clarity and completeness when answering complex questions. "
+    "You must provide diverse responses, rephrase answers if the user asks the same questions. "
+    "You must never answer in the user's place and must stick to your assistant's role unless the user asks you to "
+    "engage in role-playing. If engaging in role-playing, ensure to remain within the boundaries of what's generally "
+    "considered as legally, ethically, and morally acceptable. If the user asks you to tell a story, joke, poem, or "
+    "any similar form go for it. DO NOT interrupt the user when they are speaking, let them finish their turn before "
+    "answering."
+)
 MCQ_SYSTEM_PROMPT_THINK = "Answer the following multiple choice question with an explanation for the answer."
 # Regex pattern for timestamp tokens (compiled once at module level for efficiency)
 _TIMESTAMP_PATTERN = re.compile(r"<\|\d+\|>")
@@ -1183,13 +1198,14 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 if len(kept_cuts) != len(all_cuts_combined):
                     all_cuts_combined = CutSet.from_cuts(kept_cuts)
             prompt_tokens, prompt_token_lens, prompt_texts = collate_system_prompt(
-                all_cuts_combined, 
-                self.tokenizer, 
-                self.pad_id, 
+                all_cuts_combined,
+                self.tokenizer,
+                self.pad_id,
                 force_add_prompt=force_add_prompt,
                 mcq_agent_text_delay=mcq_agent_text_delay,
-                add_val_prompt=self.cfg.get("add_val_prompt", False),
-                add_mcq_prompt=self.cfg.get("add_mcq_prompt", None),
+                add_val_prompt=self.cfg.get("add_val_prompt", False) if self.cfg is not None else False,
+                add_mcq_prompt=self.cfg.get("add_mcq_prompt", None) if self.cfg is not None else None,
+                add_demo_val_prompt=self.cfg.get("add_demo_val_prompt", False) if self.cfg is not None else False,
                 debug_fc=self.debug_fc,
                 augment_fc_system_prompt=self.augment_fc_system_prompt,
                 fc_system_prompt_template=self.fc_system_prompt_template,
@@ -1958,6 +1974,7 @@ def collate_system_prompt(
     mcq_agent_text_delay: int = 0,  # Only add MCQ prompt if delay > 0
     add_val_prompt: bool = False,  # If True, add specific system prompt for validation
     add_mcq_prompt: int | None = None,  # If not None, add this prompt to all cuts
+    add_demo_val_prompt: bool = False,  # If True, add NVIDIA VoiceChat demo prompt
     debug_fc: bool = False,
     augment_fc_system_prompt: bool = False,
     fc_system_prompt_template: Optional[str] = None,
@@ -2024,6 +2041,10 @@ def collate_system_prompt(
         # Check if force_add_prompt is set (e.g., for ASR data)
         elif force_add_prompt is not None and force_add_prompt != "":
             prompt_text = force_add_prompt
+        elif add_demo_val_prompt:
+            # import pdb; pdb.set_trace()
+            prompt_text = DEMO_VAL_PROMPT
+            print(f"Prompt text: {prompt_text}")
         elif add_val_prompt:
             # System prompt for validation
             # if _is_asr_cut_val(c):
@@ -2037,8 +2058,8 @@ def collate_system_prompt(
                     prompt_text = MCQ_SYSTEM_PROMPT_THINK
                 else:
                     no_prompt = True
-            else: # new line added
-                no_prompt = True # new line added
+            else:
+                no_prompt = True
         else:
             # No system prompt for this cut
             no_prompt = True
@@ -2059,6 +2080,7 @@ def collate_system_prompt(
     if debug_fc:
         logging.info(f"[Dataset] Collated system prompts: shape={tokens.shape}, lens={token_lens.tolist()[:5]}...")
     
+
     return tokens, token_lens, prompt_texts
 
 def build_token_channel(

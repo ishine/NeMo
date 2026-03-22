@@ -14,17 +14,17 @@
 from .asr_bleu import ASRBLEU
 from .bleu import BLEU
 from .intelligibility import Intelligibility
-from .secs import SECS
 from .token_accuracy import TurnTakingMetrics
 from .results_logger import ResultsLogger
 from .perplexity import Perplexity, ValidationLoss
+from .secs import SECS
 __all__ = [
     'ASRBLEU',
     'BLEU',
     'Intelligibility',
-    'SECS',
     'TokenAccuracy',
     'ResultsLogger',
     'Perplexity',
+    'SECS',
     'ValidationLoss',
 ]

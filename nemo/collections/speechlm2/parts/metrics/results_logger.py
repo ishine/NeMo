@@ -178,10 +178,13 @@ class ResultsLogger:
             pred_audio_sr,
             user_audio,
             user_audio_sr,
+            audio_lens: Optional[torch.Tensor] = None,
             src_refs: Optional[list[str]] = None,
             src_hyps: Optional[list[str]] = None,
+            src_hyps_asr_head: Optional[list[str]] = None,
+            src_hyps_rnnt: Optional[list[str]] = None,
             system_prompt=None,
-            system_prompt_supervision_0: Optional[list[str]] = None,
+            system_prompt_supervision_0=None,
             source_turns: Optional[List[List[dict]]] = None,
             target_turns: Optional[List[List[dict]]] = None,
             pred_turns: Optional[List[List[dict]]] = None,
@@ -190,7 +193,6 @@ class ResultsLogger:
             target_function_channel: Optional[list[str]] = None,
             function_call_positions: Optional[list[dict]] = None,
             target_text_after_tool_response: Optional[list] = None,
-            audio_lens: Optional[torch.Tensor] = None,
             # Optional fields used by NemotronVoiceChat (ignored here if provided).
             eou_pred=None,
             fps=None,
@@ -208,12 +210,33 @@ class ResultsLogger:
                 agent_out_audio_path = os.path.join(self.agent_audio_save_path, f"{name}_{sample_id}_rank{rank}.wav")
                 user_out_audio_path = os.path.join(self.user_audio_save_path, f"{name}_{sample_id}_rank{rank}.wav")
 
-                # Trim batch-padded audio to per-sample actual length (accounts for extra_decoding_seconds).
+                # audio_lens[i] is the true per-sample duration (in samples at user_audio_sr),
+                # while the tensor row width is the batch-padded size. We align the saved WAV
+                # to audio_lens: if audio_lens > tensor width (should not happen; signals an
+                # upstream bug), zero-pad so the file matches the declared length; otherwise
+                # trim trailing batch padding.
                 cur_user_audio = user_audio[i] if user_audio is not None else None
                 cur_pred_audio = pred_audio[i]
                 if audio_lens is not None and cur_user_audio is not None:
                     actual_user_len = int(audio_lens[i].item())
-                    cur_user_audio = cur_user_audio[:actual_user_len]
+                    tensor_len = int(cur_user_audio.shape[-1])
+                    if actual_user_len > tensor_len:
+                        n_pad = actual_user_len - tensor_len
+                        cur_user_audio = torch.nn.functional.pad(
+                            cur_user_audio, (0, n_pad), mode="constant", value=0.0
+                        )
+                        logging.warning(
+                            "[ResultsLogger] audio_lens[%s]=%d > user row length=%d (sample_id=%s); "
+                            "right-padded %d zeros so saved WAV matches inference length.",
+                            i,
+                            actual_user_len,
+                            tensor_len,
+                            sample_id,
+                            n_pad,
+                        )
+                    else:
+                        cur_user_audio = cur_user_audio[..., :actual_user_len]
+                    # Trim pred_audio to the same wall-clock duration (resampled to pred SR)
                     actual_pred_len = int(actual_user_len / user_audio_sr * pred_audio_sr)
                     cur_pred_audio = cur_pred_audio[:actual_pred_len]
 
@@ -227,17 +250,36 @@ class ResultsLogger:
                     user_out_audio_path=user_out_audio_path,
                 )
 
+            # pred_src_text / asr_pred_text: caller passes src_hyps (e.g. DuplexSTTModel passes results["src_text"]).
+            # That value is set in DuplexSTTModel._post_inference: RNNT transcript when rnnt_src_text is set,
+            # else ASR-head tokens_to_str; this logger does not choose between RNNT vs ASR head here.
+            pred_src = src_hyps[i] if src_hyps is not None and i < len(src_hyps) and src_hyps[i] is not None else ""
+            pred_src_asr_head = (
+                src_hyps_asr_head[i] if src_hyps_asr_head is not None and i < len(src_hyps_asr_head) and src_hyps_asr_head[i] is not None else ""
+            )
+            pred_src_rnnt = (
+                src_hyps_rnnt[i] if src_hyps_rnnt is not None and i < len(src_hyps_rnnt) and src_hyps_rnnt[i] is not None else ""
+            )
             out_dict = {
                 "id": sample_id,
                 "target_text": refs[i],
                 "pred_text": hyps[i],
                 "pred_audio": asr_hyps[i] if asr_hyps is not None else None,
                 "src_text": src_refs[i] if src_refs is not None else "",
-                "pred_src_text": src_hyps[i] if src_hyps is not None and src_hyps[i] is not None else "",
-                "system_prompt": system_prompt[i] if system_prompt is not None and system_prompt[i] is not None else "",
+                "pred_src_text": pred_src,
+                "asr_pred_text": pred_src,
+                "asr_pred_text_asr_head": pred_src_asr_head,
+                "asr_pred_text_rnnt": pred_src_rnnt,
+                "system_prompt": (
+                    system_prompt[i]
+                    if system_prompt is not None and i < len(system_prompt) and system_prompt[i] is not None
+                    else ""
+                ),
                 "system_prompt_supervision_0": (
                     system_prompt_supervision_0[i]
-                    if system_prompt_supervision_0 is not None and system_prompt_supervision_0[i] is not None
+                    if system_prompt_supervision_0 is not None
+                    and i < len(system_prompt_supervision_0)
+                    and system_prompt_supervision_0[i] is not None
                     else ""
                 ),
                 "function_channel_text": function_channel_text[i] if function_channel_text is not None else "",
@@ -254,11 +296,18 @@ class ResultsLogger:
                 ),
                 "audio_path": os.path.relpath(out_audio_path, self.save_path) if pred_audio is not None else None,
             }
-            
+
+            # Log ASR (user transcript) predictions: asr_head and optionally RNNT
+            if pred_src_asr_head:
+                logging.info(f"[ASR head] Sample {sample_id}: {pred_src_asr_head}")
+            if pred_src_rnnt:
+                logging.info(f"[ASR RNNT] Sample {sample_id}: {pred_src_rnnt}")
+
+
             # Log function channel prediction before saving
             if function_channel_text is not None:
                 logging.info(f"[Function Channel] Sample {sample_id}: {function_channel_text[i]}")
-            
+
             # Log target function channel (ground truth)
             if target_function_channel is not None:
                 logging.info(f"[Target Function Channel] Sample {sample_id}: {target_function_channel[i]}")
@@ -266,26 +315,26 @@ class ResultsLogger:
             # Add conversation turns only if there are multiple user turns (multi-turn conversation)
             user_turns = source_turns[i] if source_turns is not None else None
             has_multi_turn_conversation = user_turns is not None and len(user_turns) > 1
-            
+
             if has_multi_turn_conversation and (target_turns is not None or pred_turns is not None):
                 conversation_turns = {}
-                
+
                 # Create ground truth conversation: source (user) + target (agent) turns
                 if target_turns is not None:
                     conversation_turns["gt_conversation"] = self.merge_turns_chronologically(
                         turns_list_1=user_turns,
                         turns_list_2=target_turns[i],
                     )
-                
+
                 # Create predicted conversation: source (user) + predicted (agent) turns
                 if pred_turns is not None:
                     conversation_turns["pred_conversation"] = self.merge_turns_chronologically(
                         turns_list_1=user_turns,
                         turns_list_2=pred_turns[i],
                     )
-                
+
                 out_dict["conversation_turns"] = conversation_turns
-            
+
             self.cached_results[name].append(out_dict)
 
             # Write per-rank metadata immediately (mirrors old code behavior).
