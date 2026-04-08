@@ -23,6 +23,41 @@ from nemo.utils import logging
 from nemo.utils.exp_manager import exp_manager
 from nemo.utils.trainer_utils import resolve_trainer_cfg
 
+HF_CONFIG_NAME = "config.json"
+
+
+def _merge_model_config_from_checkpoint(cfg, model_config):
+    """
+    Load model config from HF checkpoint's config.json, then merge inference
+    YAML overrides on top.  Also sets pretrained_weights=False so that
+    __init__ skips downloading base LLM/ASR weights (the fine-tuned weights
+    will be loaded from pretrained_s2s_model instead).
+    """
+    stt_ckpt = OmegaConf.select(cfg, "model.pretrained_s2s_model", default=None)
+    stt_ckpt = str(stt_ckpt) if stt_ckpt else None
+    if not stt_ckpt or not os.path.isdir(stt_ckpt):
+        return
+    config_path = os.path.join(stt_ckpt, HF_CONFIG_NAME)
+    if not os.path.isfile(config_path):
+        logging.warning(
+            "[s2s_duplex_stt_infer] No %s in checkpoint dir %s; using inference config only.",
+            HF_CONFIG_NAME,
+            stt_ckpt,
+        )
+        return
+    ckpt_config = OmegaConf.load(config_path)
+    ckpt_model = ckpt_config.get("model", ckpt_config)
+    ckpt_model = OmegaConf.to_container(OmegaConf.create(ckpt_model), resolve=True)
+    inference_model = model_config.get("model", {})
+    merged = OmegaConf.merge(OmegaConf.create(ckpt_model), OmegaConf.create(inference_model))
+    model_config["model"] = OmegaConf.to_container(merged, resolve=True)
+    model_config["model"]["pretrained_weights"] = False
+    if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
+        logging.info(
+            "[s2s_duplex_stt_infer] Merged model config: checkpoint=%s, inference overrides on top.",
+            stt_ckpt,
+        )
+
 
 @hydra_runner(config_path="conf", config_name="s2s_duplex_stt")
 def inference(cfg):
@@ -36,19 +71,17 @@ def inference(cfg):
     OmegaConf.save(cfg, log_dir / "exp_config.yaml")
 
     with trainer.init_module():
-        if os.path.isdir(cfg.ckpt_path):
-            # Hugging Face format
+        if cfg.ckpt_path and os.path.isdir(cfg.ckpt_path):
+            # Hugging Face format via from_pretrained
             model = DuplexSTTModel.from_pretrained(cfg.ckpt_path)
             model.validation_save_path = os.path.join(log_dir, "validation_logs")
-            # Prioritize inference yaml config, fall back to model config for defaults.
             if hasattr(cfg, "model") and hasattr(model, "cfg"):
                 model.cfg = OmegaConf.merge(model.cfg, cfg.model)
-            # Use the model's actual config if available, otherwise use cfg.model
             model_config = OmegaConf.to_container(model.cfg.model) if hasattr(model, 'cfg') and hasattr(model.cfg, 'model') else OmegaConf.to_container(cfg.model) if hasattr(cfg, 'model') else {}
         else:
-            # PyTorch Lightning format
-            model = DuplexSTTModel(OmegaConf.to_container(cfg, resolve=True))
-            # Extract just the model config section
+            model_config = OmegaConf.to_container(cfg, resolve=True)
+            _merge_model_config_from_checkpoint(cfg, model_config)
+            model = DuplexSTTModel(model_config)
             model_config = OmegaConf.to_container(cfg.model) if hasattr(cfg, 'model') else {}
 
     # Save merged config (checkpoint + inference overrides) as soon as model is ready
