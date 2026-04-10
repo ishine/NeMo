@@ -11,24 +11,19 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-HF_HUB_OFFLINE=1 TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/tts/magpietts.py \
-    --config-name magpietts \
-    name="MagpieTTS-MoE" \
-    +model.use_moe=true \
-    +model.router_load_balancing_loss_coeff=0.01 \
-    +model.router_z_loss_coeff=0.001 \
-    model.decoder.d_ffn=1536 \
-    +model.decoder.num_experts=8 \
-    +model.decoder.top_k_experts=2 \
-    +model.decoder.routing_strategy="top_k" \
-    +model.decoder.router_jitter_noise=0.01 \
+HF_HUB_OFFLINE=1 TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/tts/easy_magpietts.py \
+    --config-name easy_magpietts \
+    name="EasyMagpieTTS-Qwen-FastDev" \
+    ~model.phoneme_tokenizer \
+    model.decoder_type="huggingface" \
+    model.transformer_hf_backend="Qwen/Qwen2.5-1.5B" \
     +train_ds_meta.an4.manifest_path="/home/TestData/an4_dataset/an4_train_context_v1.json" \
     +train_ds_meta.an4.audio_dir="/" \
-    +train_ds_meta.an4.tokenizer_names="[english_phoneme]" \
+    +train_ds_meta.an4.tokenizer_names="[nemotron_nano_30b]" \
     +train_ds_meta.an4.feature_dir=null \
     +val_ds_meta.an4.manifest_path="/home/TestData/an4_dataset/an4_val_context_v1.json" \
     +val_ds_meta.an4.audio_dir="/" \
-    +val_ds_meta.an4.tokenizer_names="[english_phoneme]" \
+    +val_ds_meta.an4.tokenizer_names="[nemotron_nano_30b]" \
     +val_ds_meta.an4.feature_dir=null \
     max_epochs=1 \
     batch_size=4 \
@@ -38,4 +33,5 @@ HF_HUB_OFFLINE=1 TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 coverage run -a --data-file=
     +trainer.limit_val_batches=1 \
     trainer.strategy=auto \
     model.train_ds.dataloader_params.num_workers=0 \
-    model.validation_ds.dataloader_params.num_workers=0
+    model.validation_ds.dataloader_params.num_workers=0 \
+    ~trainer.check_val_every_n_epoch
