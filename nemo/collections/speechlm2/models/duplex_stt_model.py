@@ -296,9 +296,11 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         self._use_tp = False
 
         # Initialize audio augmenter if any augmentation is enabled
-        if (self.cfg.get('use_old_noise_aug', None) or 
-            self.cfg.get('use_room_ir_aug', None) or 
-            self.cfg.get('use_mic_ir_aug', None) or 
+        if (self.cfg.get('use_old_noise_aug', None) or
+            self.cfg.get('use_nsynth_noise_aug', False) or
+            self.cfg.get('use_audio_aug', None) or
+            self.cfg.get('use_room_ir_aug', None) or
+            self.cfg.get('use_mic_ir_aug', None) or
             self.cfg.get('use_codec_aug', None)):
             self.audio_augmenter = AudioAugmenter(sample_rate=self.source_sample_rate)
 
@@ -494,6 +496,62 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         if self.cfg.get('force_use_noise_augmentation', False):
             return True
         return formatter != 's2s_duplex_overlap_as_s2s_duplex' and formatter != 'nemo_tarred_to_duplex'
+
+    def _resolve_noise_folder_for_add_noise(self, old_noise_path):
+        """
+        Choose the noise directory / glob prefix passed to AudioAugmenter.add_noise_to_batch.
+        When use_nsynth_noise_aug is False, behavior matches the previous layout (old_noise_aug_path + '*').
+        """
+        use_nsynth = self.cfg.get('use_nsynth_noise_aug', False)
+        nsynth_path = self.cfg.get('nsynth_noise_aug_path', None)
+        nsynth_prob = self.cfg.get('nsynth_noise_prob', 0.5)
+
+        old_ready = bool(old_noise_path)
+        nsynth_ready = bool(use_nsynth and nsynth_path and os.path.isdir(nsynth_path))
+
+        if not old_ready and not nsynth_ready:
+            return None
+        if use_nsynth and nsynth_ready and old_ready:
+            if random.random() < nsynth_prob:
+                return nsynth_path
+            return os.path.join(old_noise_path, "*")
+        if use_nsynth and nsynth_ready:
+            return nsynth_path
+        return os.path.join(old_noise_path, "*") if old_ready else None
+
+    def _resolve_noise_files_for_build_audio_aug(self, old_noise_path):
+        """
+        Cached glob lists for build_audio_aug: same top-level glob as before for old noise,
+        plus optional NSynth *.wav list. Randomly returns one list per call when both exist.
+        """
+        use_nsynth = self.cfg.get('use_nsynth_noise_aug', False)
+        nsynth_path = self.cfg.get('nsynth_noise_aug_path', None)
+        nsynth_prob = self.cfg.get('nsynth_noise_prob', 0.5)
+
+        old_files = []
+        if old_noise_path:
+            cached_path = getattr(self, '_build_audio_aug_cached_old_path', None)
+            if cached_path != old_noise_path:
+                self._build_audio_aug_cached_old_path = old_noise_path
+                self._build_audio_aug_cached_old_files = glob.glob(os.path.join(old_noise_path, "*"))
+            old_files = self._build_audio_aug_cached_old_files
+
+        nsynth_files = []
+        if use_nsynth and nsynth_path:
+            cached_ns = getattr(self, '_build_audio_aug_cached_nsynth_path', None)
+            if cached_ns != nsynth_path:
+                self._build_audio_aug_cached_nsynth_path = nsynth_path
+                self._build_audio_aug_cached_nsynth_files = glob.glob(os.path.join(nsynth_path, "*.wav"))
+            nsynth_files = self._build_audio_aug_cached_nsynth_files
+
+        old_ok = bool(old_files)
+        nsynth_ok = bool(nsynth_files)
+
+        if use_nsynth and nsynth_ok and old_ok:
+            return nsynth_files if random.random() < nsynth_prob else old_files
+        if use_nsynth and nsynth_ok:
+            return nsynth_files
+        return old_files
 
     def _maybe_zero_out_scale_for_asr(self, loss_scale: torch.Tensor, text_labels: torch.Tensor,
                                       batch: dict) -> torch.Tensor:
@@ -1580,43 +1638,25 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         #     sf.write(wav_path, src_audio_np, sample_rate)
         #     print(f"Wrote batch 0 source_audio to {wav_path}")
 
-        # Apply augmentations in order: noise -> transformations ->room IR -> mic IR -> codec
-        # Each augmentation has its own independent condition and flag
-        
-        # 1. Noise augmentation (controlled by use_old_noise_aug flag)
-        if self.cfg.get('use_old_noise_aug', None) and self.training and self._is_noise_augmentation_dataset(batch["formatter"][0]):
-            noise_prob = self.cfg.get('old_noise_prob', 0.99)
-            noise_min_snr = self.cfg.get('old_noise_min_snr', 20)
-            noise_max_snr = self.cfg.get('old_noise_max_snr', 50)
-            noise_path = self.cfg.get('old_noise_aug_path', None)
-            noise_path_name = "*"
-            
-            if noise_prob and random.random() < noise_prob and noise_path:
-                batch["source_audio"] = self.audio_augmenter.add_noise_to_batch(
-                    batch["source_audio"],
-                    os.path.join(noise_path, noise_path_name),
-                    snr_db=random.randint(noise_min_snr, noise_max_snr),
-                    noise_prob_scale_user=self.cfg.get('noise_prob_scale_user', 0.3),
-                    noise_prob_scale_user_min_snr=self.cfg.get('noise_prob_scale_user_min_snr', -15),
-                    noise_prob_scale_user_max_snr=self.cfg.get('noise_prob_scale_user_max_snr', 24),
-                    snr_measure_dur=self.cfg.get('snr_measure_dur', 0.0),
-                    noise_resample=self.cfg.get('noise_resample', True),
-                    noise_prob_low_pass=self.cfg.get('noise_prob_low_pass', 0.1),
-                )
+        # Apply augmentations in order: compose aug (background noise + Gain/Pitch/LPF) -> room IR -> mic IR -> codec
 
-        # 2. Audio augmentation with transformations (controlled by use_audio_aug flag)
-        if  self.cfg.get('use_audio_aug', None) and self.training and self._is_noise_augmentation_dataset(batch["formatter"][0]):
-            # logging.info(f"Using audio augmentation with transformations")
+        # 1. Noise + audio transforms via build_audio_aug (use_old_noise_aug and/or use_nsynth_noise_aug)
+        if (
+            (self.cfg.get('use_old_noise_aug', None) or self.cfg.get('use_nsynth_noise_aug', False))
+            and self.training
+            and self._is_noise_augmentation_dataset(batch["formatter"][0])
+            and getattr(self, "audio_augmenter", None) is not None
+        ):
+            noise_prob = self.cfg.get('old_noise_prob', 0.99)
             noise_path = self.cfg.get('old_noise_aug_path', None)
-            noise_path_name = "*"
-            if noise_path:
-                noise_files = [f for f in glob.glob(os.path.join(noise_path, noise_path_name))]
+            noise_files = self._resolve_noise_files_for_build_audio_aug(noise_path)
+            if noise_prob and random.random() < noise_prob and noise_files:
                 batch["source_audio"] = self.audio_augmenter.build_audio_aug(
                     audio_samples=batch["source_audio"],
-                    noise_files=noise_files
+                    noise_files=noise_files,
                 )
 
-        # 3. Room impulse response augmentation
+        # 2. Room impulse response augmentation
         if self.cfg.get('use_room_ir_aug', None) and self.training and self._is_noise_augmentation_dataset(batch["formatter"][0]):
             roomir_prob = self.cfg.get('roomir_prob', 0.0)
             roomir_path = self.cfg.get('roomir_aug_path', None)
@@ -1642,7 +1682,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                     use_loudness_norm=self.cfg.get('micir_use_loudness_norm', True),
                 )
         
-        # 5. Codec augmentation
+        # 4. Codec augmentation
         if self.cfg.get('use_codec_aug', None) and self.training and self._is_noise_augmentation_dataset(batch["formatter"][0]):
             codec_prob = self.cfg.get('codec_prob', 0.0)
             codec_settings = self.cfg.get('codec_settings', None)

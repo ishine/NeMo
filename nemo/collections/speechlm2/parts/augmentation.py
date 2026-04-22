@@ -19,12 +19,12 @@ import os
 import random
 import subprocess
 import tempfile
-import audio_dspy as adsp
 from typing import Optional, Tuple, List, Union
 from torchaudio.functional import filtfilt
+from nemo.collections.speechlm2.parts.add_background_noise import AddBackgroundNoise
 from torch_audiomentations import (
     Compose,
-    AddBackgroundNoise,
+    # AddBackgroundNoise,
     Gain,
     # BandPassFilter,
     LowPassFilter,
@@ -58,14 +58,14 @@ class AudioAugmenter:
         self._roomir_files_cache = {}
         self._micir_files_cache = {}
         self._lowpass_filter_cache = {}
-        
+
     def add_noise_to_batch(
         self,
         batch_audio: torch.Tensor,
         noise_folder: str,
         snr_db: float = 20.0,
         noise_prob_scale_user: float = 0.3,
-        noise_prob_scale_user_min_snr: float = -15.0,
+        noise_prob_scale_user_min_snr: float = -3.0,
         noise_prob_scale_user_max_snr: float = 24.0,
         snr_measure_dur: float = 0.0,
         noise_resample: bool = True,
@@ -74,7 +74,7 @@ class AudioAugmenter:
         """Add noise to batch audio with specified SNR."""
         batch_size = batch_audio.shape[0]
         audio_length = batch_audio.shape[1]
-        
+
         if noise_folder not in self._noise_files_cache:
             noise_files = [f for f in glob.glob(os.path.join(noise_folder, "*.wav"))]
             if not noise_files:
@@ -82,60 +82,62 @@ class AudioAugmenter:
             self._noise_files_cache[noise_folder] = noise_files
         else:
             noise_files = self._noise_files_cache[noise_folder]
-        
+
         for i in range(batch_size):
-            def get_scale_factor(signal, noise, snr_db):
+            def get_scale_factor(signal, noise, snr_db_local):
                 if snr_measure_dur > 0:
                     signal = signal[: int(snr_measure_dur * self.sample_rate)]
                     noise = noise[: int(snr_measure_dur * self.sample_rate)]
                 signal_power = torch.mean(signal ** 2) + 1e-8
                 noise_power = torch.mean(noise ** 2) + 1e-8
-                
-                target_noise_power = signal_power / (10 ** (snr_db / 10))
+
+                target_noise_power = signal_power / (10 ** (snr_db_local / 10))
                 scaling_factor = torch.sqrt(target_noise_power / noise_power)
                 return scaling_factor
-            
+
             if random.random() < noise_prob_scale_user:
                 scaling_factor = get_scale_factor(
                     batch_audio[i],
                     batch_audio[i],
-                    random.randint(int(noise_prob_scale_user_min_snr), int(noise_prob_scale_user_max_snr)),
+                    random.randint(
+                        int(noise_prob_scale_user_min_snr), int(noise_prob_scale_user_max_snr)
+                    ),
                 )
                 batch_audio[i] = batch_audio[i] * scaling_factor
-            
+
             def get_noise(noise_files):
                 noise_path = random.choice(noise_files)
                 noise, sr = sf.read(noise_path, dtype='float32')
-                
+
                 if noise_resample and sr != self.sample_rate:
                     noise = librosa.resample(noise, orig_sr=sr, target_sr=self.sample_rate)
-                
+
                 if len(noise.shape) > 1:
                     noise = np.mean(noise, axis=1)
-                
+
                 noise_tensor = torch.tensor(noise, dtype=batch_audio.dtype, device=batch_audio.device)
                 scaling_factor = get_scale_factor(batch_audio[i], noise_tensor, snr_db)
                 noise_tensor = noise_tensor * scaling_factor
                 return noise_tensor
-            
+
             noise = get_noise(noise_files)
             noise2 = get_noise(noise_files)
             noise3 = get_noise(noise_files)
             noise = torch.cat([noise, noise2, noise3], axis=0)
-            
+
             if noise.size(0) < audio_length:
                 repeat_times = (audio_length // noise.size(0)) + 1
                 noise = noise.repeat(repeat_times)[:audio_length]
             else:
                 start_idx = torch.randint(0, noise.size(0) - audio_length + 1, (1,)).item()
-                noise = noise[start_idx: start_idx + audio_length]
-            
+                noise = noise[start_idx : start_idx + audio_length]
+
             if random.random() < noise_prob_low_pass:
                 cutoff = 1000.0
                 noise = self._apply_lowpass_filter(noise, cutoff)
-            
+
             batch_audio[i] = batch_audio[i] + noise
-        
+
         return batch_audio
     
     def _apply_lowpass_filter(self, audio: torch.Tensor, cutoff: float, order: int = 5) -> torch.Tensor:
@@ -411,12 +413,12 @@ class AudioAugmenter:
         # Define augmentation
         apply_augmentation = Compose(
             transforms=[
-                # AddBackgroundNoise(
-                #     background_paths=[str(f) for f in noise_files],
-                #     min_snr_in_db=5,
-                #     max_snr_in_db=25,
-                #     p=0.8,
-                # ),
+                AddBackgroundNoise(
+                    sounds_path=[str(f) for f in noise_files],
+                    min_snr_db=5.0,
+                    max_snr_db=25.0,
+                    p=0.8,
+                ),
                 Gain(
                     min_gain_in_db=-6,
                     max_gain_in_db=6,
