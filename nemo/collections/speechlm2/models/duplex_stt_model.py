@@ -446,7 +446,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             if self.cfg.get("inference_eos_boost", None):
                 text_logits[:, :, self.text_eos_id] += self.cfg.inference_eos_boost
             if not self._agent_boosts_printed:
-                print('using agent boosts:', self.cfg.inference_pad_boost, self.cfg.inference_bos_boost, self.cfg.inference_eos_boost)
+                print('using agent boosts:', self.cfg.get('inference_pad_boost', None), self.cfg.get('inference_bos_boost', None), self.cfg.get('inference_eos_boost', None))
                 self._agent_boosts_printed = True
             
             if compute_asr:
@@ -458,7 +458,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                     asr_logits[:, :, self.text_eos_id] += self.cfg.inference_user_eos_boost
                     # asr_logits[:, :, self.user_eos_id] += self.cfg.inference_user_eos_boost
                 if not self._user_boosts_printed:
-                    print('using user boosts:', self.cfg.inference_user_pad_boost, self.cfg.inference_user_bos_boost, self.cfg.inference_user_eos_boost)
+                    print('using user boosts:', self.cfg.get('inference_user_pad_boost', None), self.cfg.get('inference_user_bos_boost', None), self.cfg.get('inference_user_eos_boost', None))
                     self._user_boosts_printed = True
 
         ans = {"text_logits": text_logits, "function_logits": function_logits}
