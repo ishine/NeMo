@@ -349,6 +349,10 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
                 function_responses=function_responses,
                 function_response_lengths=function_response_lengths,
                 function_response_steps=function_response_steps,
+                temperature=float(self.cfg.get("temperature", 0.0)),
+                top_p=float(self.cfg.get("top_p", 1.0)),
+                repetition_penalty=float(self.cfg.get("repetition_penalty", 1.0)),
+                presence_penalty=float(self.cfg.get("presence_penalty", 0.0)),
             )
 
             with fp32_precision():  # resample is fragile to bfloat16 default dtype
@@ -548,6 +552,10 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         function_response_lengths: torch.Tensor = None,
         function_response_steps: torch.Tensor = None,
         function_call_steps: torch.Tensor = None,
+        temperature: float = 0.0,
+        top_p: float = 1.0,
+        repetition_penalty: float = 1.0,
+        presence_penalty: float = 0.0,
     ) -> dict[str, torch.Tensor]:
         """
         Autoregressive prediction.
@@ -571,6 +579,15 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
             input_signal, input_signal_lens, input_pad_len,
             force_bos_positions, prompt_tokens, prompt_token_lens
         )
+        inference_state["temperature"] = float(temperature)
+        inference_state["top_p"] = float(top_p)
+        inference_state["repetition_penalty"] = float(repetition_penalty)
+        inference_state["presence_penalty"] = float(presence_penalty)
+        inference_state["_text_special_ids"] = {
+            self.stt_model.text_pad_id,
+            self.stt_model.text_bos_id,
+            self.stt_model.text_eos_id,
+        }
 
         # RNNT for ASR branch: same setup as DuplexSTTModel.offline_inference (VoiceChat uses its own loop).
         inference_state["rnnt_src_text"] = None
