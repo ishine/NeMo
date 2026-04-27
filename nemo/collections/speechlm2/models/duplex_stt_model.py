@@ -2399,8 +2399,9 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         # BLEU for "assistant response after TOOLRESPONSE": ref = extracted GT segment, hyp = full agent prediction
         self.bleu_after_tool = BLEU().reset()
         # BLEU for tool/function calls: ref = target between SOTC and EOTC, hyp = predicted call content
+        # normalize=False: Whisper normalizer strips JSON punctuation ({}[]":,) → always produces 0 BLEU
         if self.use_function_head:
-            self.bleu_tool_call = BLEU().reset()
+            self.bleu_tool_call = BLEU(normalize=False).reset()
 
         self.turn_taking_metrics = TurnTakingMetrics(
             eos_token_id=self.tokenizer.text_to_ids('$')[0],

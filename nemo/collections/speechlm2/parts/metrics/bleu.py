@@ -51,9 +51,30 @@ class BLEU:
                 logging.info(f"[REF]\t{ref}\n[HYP]\t{hyp} [{asrb:.2f}]")
 
     def compute(self) -> dict[str, torch.Tensor]:
+        # Gather refs/hyps from all ranks so corpus BLEU is computed over the full
+        # global dataset rather than per-rank shards.
+        # All ranks participate in all_gather_object and then each rank computes BLEU
+        # on the same merged data, producing an identical scalar everywhere.
+        # sync_dist=True in self.log() then averages identical values → correct,
+        # and no rank ever diverges from the collective call sequence → no NCCL timeout.
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            world_size = torch.distributed.get_world_size()
+            local_data = {name: (list(self._refs[name]), list(self._hyps[name])) for name in self._refs}
+            gathered = [None] * world_size
+            torch.distributed.all_gather_object(gathered, local_data)
+            merged_refs = defaultdict(list)
+            merged_hyps = defaultdict(list)
+            for rank_data in gathered:
+                for name, (refs, hyps) in rank_data.items():
+                    merged_refs[name].extend(refs)
+                    merged_hyps[name].extend(hyps)
+        else:
+            merged_refs = self._refs
+            merged_hyps = self._hyps
+
         corpus_metric = {}
-        for name in self._refs.keys():
-            metric = torch.tensor(sacrebleu.corpus_bleu(self._hyps[name], [self._refs[name]]).score)
+        for name in merged_refs.keys():
+            metric = torch.tensor(sacrebleu.corpus_bleu(merged_hyps[name], [merged_refs[name]]).score)
             corpus_metric[f"txt_bleu_{name}"] = metric
         if corpus_metric:
             corpus_metric["txt_bleu"] = torch.stack(list(corpus_metric.values())).mean()
