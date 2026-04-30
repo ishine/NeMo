@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import glob
 import os
 import copy
 import random
@@ -20,6 +21,7 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 import torchaudio
+
 from lightning import LightningModule
 from omegaconf import DictConfig, OmegaConf
 from peft import PeftModel
@@ -104,70 +106,6 @@ class ChannelEmbeddings(nn.Module):
         if user_embeds is not None:
             user_embeds = user_embeds + self.user_embed
         return agent_embeds, user_embeds
-
-
-def _sample_text_token(
-    logits: torch.Tensor,
-    generated_tokens: torch.Tensor,
-    current_step: int,
-    temperature: float = 0.0,
-    top_p: float = 1.0,
-    repetition_penalty: float = 1.0,
-    presence_penalty: float = 0.0,
-    special_token_ids: set | None = None,
-) -> torch.Tensor:
-    """Sample a text token with temperature, top-p, repetition penalty, and presence penalty.
-
-    Returns greedy argmax when temperature=0.
-    Applied order: repetition_penalty → presence_penalty → temperature → top_p → softmax + multinomial.
-    Only call this for the text channel; function/ASR channels always use greedy.
-    """
-    if special_token_ids is None:
-        special_token_ids = set()
-
-    if temperature == 0.0:
-        return logits.argmax(dim=-1)
-
-    B = logits.shape[0]
-    sampled = logits.argmax(dim=-1).clone()
-
-    for b in range(B):
-        if logits[b].argmax().item() in special_token_ids:
-            continue
-
-        batch_logits = logits[b].clone()
-
-        if (repetition_penalty != 1.0 or presence_penalty != 0.0) and current_step > 0:
-            prev = generated_tokens[b, :current_step].unique()
-            if special_token_ids:
-                special_t = torch.tensor(list(special_token_ids), device=prev.device)
-                prev = prev[~torch.isin(prev, special_t)]
-
-            for tok in prev:
-                tid = tok.item()
-                if repetition_penalty != 1.0:
-                    if batch_logits[tid] > 0:
-                        batch_logits[tid] /= repetition_penalty
-                    else:
-                        batch_logits[tid] *= repetition_penalty
-                if presence_penalty != 0.0:
-                    batch_logits[tid] -= presence_penalty
-
-        if temperature != 1.0:
-            batch_logits = batch_logits / temperature
-
-        if top_p < 1.0:
-            sorted_logits, sorted_indices = torch.sort(batch_logits, descending=True)
-            cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
-            to_remove = cumulative_probs > top_p
-            to_remove[1:] = to_remove[:-1].clone()
-            to_remove[0] = False
-            batch_logits[sorted_indices[to_remove]] = float('-inf')
-
-        probs = torch.softmax(batch_logits, dim=-1)
-        sampled[b] = torch.multinomial(probs, num_samples=1).item()
-
-    return sampled
 
 
 class DuplexSTTModel(LightningModule, HFHubMixin):
@@ -510,7 +448,12 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             if self.cfg.get("inference_eos_boost", None):
                 text_logits[:, :, self.text_eos_id] += self.cfg.inference_eos_boost
             if not self._agent_boosts_printed:
-                print('using agent boosts:', self.cfg.get('inference_pad_boost', None), self.cfg.get('inference_bos_boost', None), self.cfg.get('inference_eos_boost', None))
+                print(
+                    'using agent boosts:',
+                    self.cfg.get("inference_pad_boost", None),
+                    self.cfg.get("inference_bos_boost", None),
+                    self.cfg.get("inference_eos_boost", None),
+                )
                 self._agent_boosts_printed = True
             
             if compute_asr:
@@ -522,7 +465,12 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                     asr_logits[:, :, self.text_eos_id] += self.cfg.inference_user_eos_boost
                     # asr_logits[:, :, self.user_eos_id] += self.cfg.inference_user_eos_boost
                 if not self._user_boosts_printed:
-                    print('using user boosts:', self.cfg.get('inference_user_pad_boost', None), self.cfg.get('inference_user_bos_boost', None), self.cfg.get('inference_user_eos_boost', None))
+                    print(
+                        'using user boosts:',
+                        self.cfg.get("inference_user_pad_boost", None),
+                        self.cfg.get("inference_user_bos_boost", None),
+                        self.cfg.get("inference_user_eos_boost", None),
+                    )
                     self._user_boosts_printed = True
 
         ans = {"text_logits": text_logits, "function_logits": function_logits}
@@ -1398,7 +1346,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         #     sf.write(wav_path, src_audio_np, sample_rate)
         #     print(f"Wrote batch 0 source_audio to {wav_path}")
 
-        # Apply augmentations in order: noise -> room IR -> mic IR -> codec
+        # Apply augmentations in order: noise -> transformations ->room IR -> mic IR -> codec
         # Each augmentation has its own independent condition and flag
         
         # 1. Noise augmentation (controlled by use_old_noise_aug flag)
@@ -1410,7 +1358,6 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             noise_path_name = "*"
             
             if noise_prob and random.random() < noise_prob and noise_path:
-                import os
                 batch["source_audio"] = self.audio_augmenter.add_noise_to_batch(
                     batch["source_audio"],
                     os.path.join(noise_path, noise_path_name),
@@ -1422,8 +1369,20 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                     noise_resample=self.cfg.get('noise_resample', True),
                     noise_prob_low_pass=self.cfg.get('noise_prob_low_pass', 0.1),
                 )
-        
-        # 2. Room impulse response augmentation
+
+        # 2. Audio augmentation with transformations (controlled by use_audio_aug flag)
+        if  self.cfg.get('use_audio_aug', None) and self.training and self._is_noise_augmentation_dataset(batch["formatter"][0]):
+            logging.info(f"Using audio augmentation with transformations")
+            noise_path = self.cfg.get('old_noise_aug_path', None)
+            noise_path_name = "*"
+            if noise_path:
+                noise_files = [f for f in glob.glob(os.path.join(noise_path, noise_path_name))]
+                batch["source_audio"] = self.audio_augmenter.build_audio_aug(
+                    audio_samples=batch["source_audio"],
+                    noise_files=noise_files
+                )
+
+        # 3. Room impulse response augmentation
         if self.cfg.get('use_room_ir_aug', None) and self.training and self._is_noise_augmentation_dataset(batch["formatter"][0]):
             roomir_prob = self.cfg.get('roomir_prob', 0.0)
             roomir_path = self.cfg.get('roomir_aug_path', None)
@@ -1436,7 +1395,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                     use_loudness_norm=self.cfg.get('roomir_use_loudness_norm', True),
                 )
         
-        # 3. Microphone impulse response augmentation
+        # 4. Microphone impulse response augmentation
         if self.cfg.get('use_mic_ir_aug', None) and self.training and self._is_noise_augmentation_dataset(batch["formatter"][0]):
             micir_prob = self.cfg.get('micir_prob', 0.0)
             micir_path = self.cfg.get('micir_aug_path', None)
@@ -1449,7 +1408,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                     use_loudness_norm=self.cfg.get('micir_use_loudness_norm', True),
                 )
         
-        # 4. Codec augmentation
+        # 5. Codec augmentation
         if self.cfg.get('use_codec_aug', None) and self.training and self._is_noise_augmentation_dataset(batch["formatter"][0]):
             codec_prob = self.cfg.get('codec_prob', 0.0)
             codec_settings = self.cfg.get('codec_settings', None)
@@ -2399,9 +2358,8 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         # BLEU for "assistant response after TOOLRESPONSE": ref = extracted GT segment, hyp = full agent prediction
         self.bleu_after_tool = BLEU().reset()
         # BLEU for tool/function calls: ref = target between SOTC and EOTC, hyp = predicted call content
-        # normalize=False: Whisper normalizer strips JSON punctuation ({}[]":,) → always produces 0 BLEU
         if self.use_function_head:
-            self.bleu_tool_call = BLEU(normalize=False).reset()
+            self.bleu_tool_call = BLEU().reset()
 
         self.turn_taking_metrics = TurnTakingMetrics(
             eos_token_id=self.tokenizer.text_to_ids('$')[0],
@@ -2514,10 +2472,6 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                     function_response_lengths=function_response_lengths,
                     function_response_steps=function_response_steps,
                     function_call_steps=function_call_steps,
-                    temperature=float(self.cfg.get("temperature", 0.0)),
-                    top_p=float(self.cfg.get("top_p", 1.0)),
-                    repetition_penalty=float(self.cfg.get("repetition_penalty", 1.0)),
-                    presence_penalty=float(self.cfg.get("presence_penalty", 0.0)),
                 )
 
             self.bleu.update(name=name, refs=dataset_batch["target_texts"], hyps=results["text"])
@@ -3541,17 +3495,10 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         if inference_state["start_gen_pos"] > 0:
             pass
         else:
-            inference_state["gen_text"][:, 0] = _sample_text_token(
-                ans["text_logits"][:, -1], inference_state["gen_text"], 0,
-                inference_state.get("temperature", 0.0),
-                inference_state.get("top_p", 1.0),
-                inference_state.get("repetition_penalty", 1.0),
-                inference_state.get("presence_penalty", 0.0),
-                inference_state.get("_text_special_ids"),
-            )
+            inference_state["gen_text"][:, 0] = ans["text_logits"][:, -1].argmax(dim=-1)
             if self.predict_user_text:
                 inference_state["gen_asr"][:, 0] = ans["asr_logits"][:, -1].argmax(dim=-1)
-            # Function channel always uses greedy (not affected by text sampling params)
+            # Function channel prediction (same logits, different role)
             if self.use_function_head:
                 inference_state["gen_function"][:, 0] = ans["function_logits"][:, -1].argmax(dim=-1)
 
@@ -3658,12 +3605,6 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
         is_prompt_position = inference_state["is_prompt_position_mask"][:, t]
 
-        _temp = inference_state.get("temperature", 0.0)
-        _top_p = inference_state.get("top_p", 1.0)
-        _rep_pen = inference_state.get("repetition_penalty", 1.0)
-        _pres_pen = inference_state.get("presence_penalty", 0.0)
-        _special_ids = inference_state.get("_text_special_ids")
-
         if inference_state["use_cache"]:
             ans = self(
                 inference_state["input_embeds"][:, t: t + 1],
@@ -3673,13 +3614,10 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 target_text_tokens=None,
             )
             if not is_prompt_position.all():
-                generated_tokens = _sample_text_token(
-                    ans["text_logits"][:, -1], inference_state["gen_text"], t,
-                    _temp, _top_p, _rep_pen, _pres_pen, _special_ids,
-                )
+                generated_tokens = ans["text_logits"][:, -1].argmax(dim=-1)
                 inference_state["gen_text"][:, t] = torch.where(is_prompt_position, inference_state["gen_text"][:, t], generated_tokens)
 
-                # Function channel always uses greedy (not affected by text sampling params)
+                # Function channel: use separate head if enabled
                 if self.use_function_head:
                     generated_function_tokens = ans["function_logits"][:, -1].argmax(dim=-1)
 
@@ -3700,13 +3638,10 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 target_text_tokens=None,
             )
             if not is_prompt_position.all():
-                generated_tokens = _sample_text_token(
-                    ans["text_logits"][:, -1], inference_state["gen_text"], t,
-                    _temp, _top_p, _rep_pen, _pres_pen, _special_ids,
-                )
+                generated_tokens = ans["text_logits"][:, -1].argmax(dim=-1)
                 inference_state["gen_text"][:, t] = torch.where(is_prompt_position, inference_state["gen_text"][:, t], generated_tokens)
 
-                # Function channel always uses greedy (not affected by text sampling params)
+                # Function channel: use separate head if enabled
                 if self.use_function_head:
                     generated_function_tokens = ans["function_logits"][:, -1].argmax(dim=-1)
 
@@ -4612,14 +4547,10 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             function_response_lengths: torch.Tensor = None,
             function_response_steps: torch.Tensor = None,
             function_call_steps: torch.Tensor = None,
-            temperature: float = 0.0,
-            top_p: float = 1.0,
-            repetition_penalty: float = 1.0,
-            presence_penalty: float = 0.0,
     ) -> dict[str, torch.Tensor]:
         """
         Autoregressive prediction (simple loop like original).
-
+        
         For function calling: expansion/pre-filling is handled by helper function.
         """
         if self.cfg.get("fc_log", False):
@@ -4635,14 +4566,6 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             input_signal, input_signal_lens, input_pad_len,
             force_bos_positions, prompt_tokens, prompt_token_lens, sample_id
         )
-        # Store sampling params so _step_zero and _step_inference can use them.
-        inference_state["temperature"] = float(temperature)
-        inference_state["top_p"] = float(top_p)
-        inference_state["repetition_penalty"] = float(repetition_penalty)
-        inference_state["presence_penalty"] = float(presence_penalty)
-        inference_state["_text_special_ids"] = {
-            self.text_pad_id, self.text_bos_id, self.text_eos_id,
-        }
 
         # RNNT for ASR branch: run one asr_emb frame per step in the loop (streaming, same cadence as asr_head).
         inference_state["rnnt_src_text"] = None
