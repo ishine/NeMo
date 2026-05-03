@@ -2402,6 +2402,10 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         # normalize=False: Whisper normalizer strips JSON punctuation ({}[]":,) → always produces 0 BLEU
         if self.use_function_head:
             self.bleu_tool_call = BLEU(normalize=False).reset()
+            # Eagerly initialize the silence template here so all ranks enter _create_silence_template
+            # (and its internal all_reduce) simultaneously. Lazy init inside _expand_for_function_calling
+            # deadlocks when mixed FC/non-FC batches cause only some ranks to trigger the init.
+            self._ensure_silence_template_initialized()
 
         self.turn_taking_metrics = TurnTakingMetrics(
             eos_token_id=self.tokenizer.text_to_ids('$')[0],
