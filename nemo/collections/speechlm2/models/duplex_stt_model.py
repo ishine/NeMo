@@ -4929,9 +4929,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         For function calling: expansion/pre-filling is handled by helper function.
         """
         if self.cfg.get("fc_log", False):
-            logging.info(f"╔═══ [OFFLINE_INFERENCE CALLED] ═══╗")        return agent_embeds, user_embeds
-
-
+            logging.info(f"╔═══ [OFFLINE_INFERENCE CALLED] ═══╗")
             logging.info(f"║ function_responses: {function_responses.shape if function_responses is not None else 'None'}")
             logging.info(f"║ function_response_lengths: {function_response_lengths.shape if function_response_lengths is not None else 'None'}")
             logging.info(f"║ function_call_steps: {function_call_steps.shape if function_call_steps is not None else 'None'}")
