@@ -19,13 +19,28 @@ import os
 import random
 import subprocess
 import tempfile
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List, Union
+from torchaudio.functional import filtfilt
+from nemo.collections.speechlm2.parts.add_background_noise import AddBackgroundNoise
+from torch_audiomentations import (
+    Compose,
+    # AddBackgroundNoise,
+    Gain,
+    # BandPassFilter,
+    LowPassFilter,
+    PitchShift,
+    # Shift,
+    # AddColoredNoise,
+    # PolarityInversion
+)
 
 import librosa
 import numpy as np
 import soundfile as sf
 import torch
 from scipy.signal import butter, fftconvolve, lfilter
+from nemo.collections.speechlm2.parts.precision import fp32_precision
+from pathlib import Path
 
 try:
     import pyloudnorm as pyln
@@ -43,14 +58,14 @@ class AudioAugmenter:
         self._roomir_files_cache = {}
         self._micir_files_cache = {}
         self._lowpass_filter_cache = {}
-        
+
     def add_noise_to_batch(
         self,
         batch_audio: torch.Tensor,
         noise_folder: str,
         snr_db: float = 20.0,
         noise_prob_scale_user: float = 0.3,
-        noise_prob_scale_user_min_snr: float = -15.0,
+        noise_prob_scale_user_min_snr: float = -3.0,
         noise_prob_scale_user_max_snr: float = 24.0,
         snr_measure_dur: float = 0.0,
         noise_resample: bool = True,
@@ -59,7 +74,7 @@ class AudioAugmenter:
         """Add noise to batch audio with specified SNR."""
         batch_size = batch_audio.shape[0]
         audio_length = batch_audio.shape[1]
-        
+
         if noise_folder not in self._noise_files_cache:
             noise_files = [f for f in glob.glob(os.path.join(noise_folder, "*.wav"))]
             if not noise_files:
@@ -67,60 +82,62 @@ class AudioAugmenter:
             self._noise_files_cache[noise_folder] = noise_files
         else:
             noise_files = self._noise_files_cache[noise_folder]
-        
+
         for i in range(batch_size):
-            def get_scale_factor(signal, noise, snr_db):
+            def get_scale_factor(signal, noise, snr_db_local):
                 if snr_measure_dur > 0:
                     signal = signal[: int(snr_measure_dur * self.sample_rate)]
                     noise = noise[: int(snr_measure_dur * self.sample_rate)]
                 signal_power = torch.mean(signal ** 2) + 1e-8
                 noise_power = torch.mean(noise ** 2) + 1e-8
-                
-                target_noise_power = signal_power / (10 ** (snr_db / 10))
+
+                target_noise_power = signal_power / (10 ** (snr_db_local / 10))
                 scaling_factor = torch.sqrt(target_noise_power / noise_power)
                 return scaling_factor
-            
+
             if random.random() < noise_prob_scale_user:
                 scaling_factor = get_scale_factor(
                     batch_audio[i],
                     batch_audio[i],
-                    random.randint(int(noise_prob_scale_user_min_snr), int(noise_prob_scale_user_max_snr)),
+                    random.randint(
+                        int(noise_prob_scale_user_min_snr), int(noise_prob_scale_user_max_snr)
+                    ),
                 )
                 batch_audio[i] = batch_audio[i] * scaling_factor
-            
+
             def get_noise(noise_files):
                 noise_path = random.choice(noise_files)
                 noise, sr = sf.read(noise_path, dtype='float32')
-                
+
                 if noise_resample and sr != self.sample_rate:
                     noise = librosa.resample(noise, orig_sr=sr, target_sr=self.sample_rate)
-                
+
                 if len(noise.shape) > 1:
                     noise = np.mean(noise, axis=1)
-                
+
                 noise_tensor = torch.tensor(noise, dtype=batch_audio.dtype, device=batch_audio.device)
                 scaling_factor = get_scale_factor(batch_audio[i], noise_tensor, snr_db)
                 noise_tensor = noise_tensor * scaling_factor
                 return noise_tensor
-            
+
             noise = get_noise(noise_files)
             noise2 = get_noise(noise_files)
             noise3 = get_noise(noise_files)
             noise = torch.cat([noise, noise2, noise3], axis=0)
-            
+
             if noise.size(0) < audio_length:
                 repeat_times = (audio_length // noise.size(0)) + 1
                 noise = noise.repeat(repeat_times)[:audio_length]
             else:
                 start_idx = torch.randint(0, noise.size(0) - audio_length + 1, (1,)).item()
-                noise = noise[start_idx: start_idx + audio_length]
-            
+                noise = noise[start_idx : start_idx + audio_length]
+
             if random.random() < noise_prob_low_pass:
                 cutoff = 1000.0
                 noise = self._apply_lowpass_filter(noise, cutoff)
-            
+
             batch_audio[i] = batch_audio[i] + noise
-        
+
         return batch_audio
     
     def _apply_lowpass_filter(self, audio: torch.Tensor, cutoff: float, order: int = 5) -> torch.Tensor:
@@ -362,6 +379,174 @@ class AudioAugmenter:
             
             return decoded
 
+    def build_audio_aug(
+        self, 
+        audio_samples: torch.Tensor, 
+        noise_files: List[Union[str, Path]]
+    ) -> torch.Tensor:
+        """
+        Construct and apply an audio augmentation pipeline to the input batch.
+
+        Parameters
+        audio_samples : torch.Tensor
+            Input audio batch.
+        noise_files : List[str] or List[Path]
+            List of paths to WAV noise files that will be used by
+            AddBackgroundNoise.
+
+        Returns
+        torch.Tensor
+            Augmented audio batch, same shape as `audio_samples`.
+        """
+        # Ensure correct shape
+        if audio_samples.dim() == 2:            # [B, T]
+            audio_samples = audio_samples.unsqueeze(1)  # [B, 1, T]
+        elif audio_samples.dim() == 1:          # [T]
+            audio_samples = audio_samples.unsqueeze(0).unsqueeze(0)
+            
+        # Random EQ
+        if np.random.rand() > 0.1:
+            eq = self.get_random_eq(self.sample_rate)
+            with fp32_precision():
+                audio_samples = self.apply_eq(audio_samples, eq)
+
+        # Define augmentation
+        apply_augmentation = Compose(
+            transforms=[
+                AddBackgroundNoise(
+                    sounds_path=[str(f) for f in noise_files],
+                    min_snr_db=5.0,
+                    max_snr_db=25.0,
+                    p=0.8,
+                ),
+                Gain(
+                    min_gain_in_db=-6,
+                    max_gain_in_db=6,
+                    p=0.8,
+                ),
+                PitchShift(
+                    min_transpose_semitones=-1.0,
+                    max_transpose_semitones=1.0,
+                    sample_rate=self.sample_rate,
+                    p=0.2,
+                ),
+                # Shift(
+                #     min_shift=-0.015,
+                #     max_shift=0.015,
+                #     shift_unit="seconds",
+                #     rollover=False,
+                #     p=0.3,
+                # ),
+                # BandPassFilter(
+                #     min_center_frequency=200,
+                #     max_center_frequency=4000,
+                #     min_bandwidth_fraction=0.5,
+                #     max_bandwidth_fraction=1.99,
+                #     p=0.7,
+                # ),
+                LowPassFilter(
+                    min_cutoff_freq=5000.0,
+                    max_cutoff_freq=7500.0,
+                    p=0.4
+                ),
+                # PolarityInversion(p=0.5),
+            ]
+        )
+
+        # Apply augmentation
+        with fp32_precision():
+            transformed_audio =  apply_augmentation(audio_samples, sample_rate=self.sample_rate)
+        
+        # If any sample's absolute peak > 1, rescale that sample so its peak becomes 0.85
+        # reduce over all non-batch dims (works for [B,T], [B,1,T], [B,C,T], etc.)
+        reduce_dims = tuple(range(1, transformed_audio.dim()))
+        max_abs = transformed_audio.abs().amax(dim=reduce_dims)  # shape: (B,)
+        eps = 1e-12
+        scale = torch.where(max_abs > 1.0, 0.85 / (max_abs + eps), torch.ones_like(max_abs))
+        # broadcast scale to audio shape
+        view_shape = [transformed_audio.shape[0]] + [1] * (transformed_audio.dim() - 1)
+        transformed_audio = transformed_audio * scale.view(*view_shape)
+
+        # Remove channel dim [B, 1, T] -> [B, T]
+        return transformed_audio.squeeze(1)
+
+    def apply_eq(self, signal, eq, sampling_rate=16000, display=False):
+        """
+        Filter a signal with a low-pass/high-pass/band-pass/band-stop
+        Butterworth filter.
+
+        Parameters
+        ----------
+        signal: ndarray of floats (shape [n_channels, n_samples])
+            signal to filter
+
+        sampling_rate: int
+            sampling rate of the signal
+
+        eq: audio_dspy.eq.EQ
+            audio_dspy EQ instance containing filter parameters in .filters
+
+        display: bool (default False)
+            display input signal vs filtered signal
+
+        Returns
+        -------
+        ndarray of floats (shape [n_channels, n_samples])
+            filtered signal
+        """
+
+        filt_signal = signal
+        for filt in eq.filters:
+            a = torch.as_tensor(filt.a_coefs, dtype=torch.float32, device=filt_signal.device)
+            b = torch.as_tensor(filt.b_coefs, dtype=torch.float32, device=filt_signal.device)
+            filt_signal = filtfilt(filt_signal, a, b)
+
+        if torch.any(torch.isnan(filt_signal)):
+            raise ValueError('NaN found in filtered signal during EQ')
+
+        if filt_signal.dtype != signal.dtype:
+            filt_signal = filt_signal.to(dtype=signal.dtype)
+
+        return filt_signal
+
+    def get_random_eq(self, sampling_rate, display=False):
+        """Generate random EQ"""
+        import audio_dspy as adsp
+
+        eq = adsp.EQ(sampling_rate)
+
+        # Choose a filter type among low_shelf, bell, high_shelf
+        filter_type_choice = np.random.randint(3)
+
+        if filter_type_choice == 0:  # low_shelf
+            cutoff_freq = np.random.uniform(100, 400)
+            gain = np.random.uniform(1.05, 1.5)
+            q_factor = np.random.uniform(0.1, 0.8)
+            eq.add_lowshelf(cutoff_freq, q_factor, gain)
+
+        if filter_type_choice == 1:  # bell
+            # How many bands? 1 to 3
+            n_bands = np.random.randint(1, 4)
+            for sb in range(n_bands):
+                cutoff_freq = np.random.uniform(100, 6000)
+                gain = np.random.uniform(1.05, 1.5)
+                q_factor = np.random.uniform(0.1, 1)
+                eq.add_bell(cutoff_freq, q_factor, gain)
+
+        if filter_type_choice == 2:  # high_shelf
+            cutoff_freq = np.random.uniform(5000, 6000)
+            gain = np.random.uniform(1.05, 1.5)
+            q_factor = np.random.uniform(0.1, 0.8)
+            eq.add_highshelf(cutoff_freq, q_factor, gain)
+
+        if display:
+            import matplotlib.pyplot as plt
+
+            plt.figure()
+            eq.plot_eq_curve()
+            plt.show(block=False)
+
+        return eq
 
 DEFAULT_CODEC_SETTINGS = {
     "high_libopus_8k_5k": ["-ar", "8000", "-c:a", "libopus", "-application", "voip", "-b:a", "5.5k", "-f", "ogg"],

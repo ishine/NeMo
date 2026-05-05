@@ -11,15 +11,20 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import glob
 import os
 import copy
+import librosa
+import numpy as np
 import random
+import soundfile as sf
 import tempfile
 
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 import torchaudio
+
 from lightning import LightningModule
 from omegaconf import DictConfig, OmegaConf
 from peft import PeftModel
@@ -355,9 +360,11 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         self._use_tp = False
 
         # Initialize audio augmenter if any augmentation is enabled
-        if (self.cfg.get('use_old_noise_aug', None) or 
-            self.cfg.get('use_room_ir_aug', None) or 
-            self.cfg.get('use_mic_ir_aug', None) or 
+        if (self.cfg.get('use_old_noise_aug', None) or
+            self.cfg.get('use_nsynth_noise_aug', False) or
+            self.cfg.get('use_audio_aug', None) or
+            self.cfg.get('use_room_ir_aug', None) or
+            self.cfg.get('use_mic_ir_aug', None) or
             self.cfg.get('use_codec_aug', None)):
             self.audio_augmenter = AudioAugmenter(sample_rate=self.source_sample_rate)
 
@@ -373,9 +380,10 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         # MCQ delay counters for cumulative logging
         self.mcq_delay_total_cuts = 0
         self.mcq_delay_total_actual = 0
+
         # Cache for backchannel file names to avoid repeated glob operations
-        # if self.cfg.get('backchannel_prob', None) and self.cfg.backchannel_prob > 0:
-        #     self._backchannel_files_cache = {}
+        if self.cfg.get('backchannel_prob', None) and self.cfg.backchannel_prob > 0:
+            self._backchannel_files_cache = {}
         
         # Lazy initialization of silence template
         # We defer creation until first use to avoid device/dtype issues during __init__
@@ -543,6 +551,62 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             return True
         return formatter != 's2s_duplex_overlap_as_s2s_duplex' and formatter != 'nemo_tarred_to_duplex'
 
+    def _resolve_noise_folder_for_add_noise(self, old_noise_path):
+        """
+        Choose the noise directory / glob prefix passed to AudioAugmenter.add_noise_to_batch.
+        When use_nsynth_noise_aug is False, behavior matches the previous layout (old_noise_aug_path + '*').
+        """
+        use_nsynth = self.cfg.get('use_nsynth_noise_aug', False)
+        nsynth_path = self.cfg.get('nsynth_noise_aug_path', None)
+        nsynth_prob = self.cfg.get('nsynth_noise_prob', 0.5)
+
+        old_ready = bool(old_noise_path)
+        nsynth_ready = bool(use_nsynth and nsynth_path and os.path.isdir(nsynth_path))
+
+        if not old_ready and not nsynth_ready:
+            return None
+        if use_nsynth and nsynth_ready and old_ready:
+            if random.random() < nsynth_prob:
+                return nsynth_path
+            return os.path.join(old_noise_path, "*")
+        if use_nsynth and nsynth_ready:
+            return nsynth_path
+        return os.path.join(old_noise_path, "*") if old_ready else None
+
+    def _resolve_noise_files_for_build_audio_aug(self, old_noise_path):
+        """
+        Cached glob lists for build_audio_aug: same top-level glob as before for old noise,
+        plus optional NSynth *.wav list. Randomly returns one list per call when both exist.
+        """
+        use_nsynth = self.cfg.get('use_nsynth_noise_aug', False)
+        nsynth_path = self.cfg.get('nsynth_noise_aug_path', None)
+        nsynth_prob = self.cfg.get('nsynth_noise_prob', 0.5)
+
+        old_files = []
+        if old_noise_path:
+            cached_path = getattr(self, '_build_audio_aug_cached_old_path', None)
+            if cached_path != old_noise_path:
+                self._build_audio_aug_cached_old_path = old_noise_path
+                self._build_audio_aug_cached_old_files = glob.glob(os.path.join(old_noise_path, "*"))
+            old_files = self._build_audio_aug_cached_old_files
+
+        nsynth_files = []
+        if use_nsynth and nsynth_path:
+            cached_ns = getattr(self, '_build_audio_aug_cached_nsynth_path', None)
+            if cached_ns != nsynth_path:
+                self._build_audio_aug_cached_nsynth_path = nsynth_path
+                self._build_audio_aug_cached_nsynth_files = glob.glob(os.path.join(nsynth_path, "*.wav"))
+            nsynth_files = self._build_audio_aug_cached_nsynth_files
+
+        old_ok = bool(old_files)
+        nsynth_ok = bool(nsynth_files)
+
+        if use_nsynth and nsynth_ok and old_ok:
+            return nsynth_files if random.random() < nsynth_prob else old_files
+        if use_nsynth and nsynth_ok:
+            return nsynth_files
+        return old_files
+
     def _maybe_zero_out_scale_for_asr(self, loss_scale: torch.Tensor, text_labels: torch.Tensor,
                                       batch: dict) -> torch.Tensor:
         """
@@ -559,6 +623,236 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                     bos_idx = bos_indices[0][0].item()
                     loss_scale[i, bos_idx + 1:, :] = 0
         return loss_scale
+
+    def add_backchannel_to_batch(
+        self,
+        batch_audio,
+        target_tokens,
+        source_tokens,
+        backchannel_folder,
+        snr_db=15,
+        backchannel_prob_scale=0.5,
+        debug=False,
+        debug_save_path=None,
+        debug_max_files=16,
+        target_audio=None,
+    ):
+        """
+        Add backchannel audio segments to user audio during silence periods (when agent is talking).
+        
+        Args:
+            batch_audio: User audio tensor (B, T_audio)
+            target_tokens: Agent tokens (B, T_tokens) - used to identify when agent is talking
+            backchannel_folder: Folder containing backchannel audio files
+            snr_db: Signal-to-noise ratio for mixing backchannel
+            backchannel_prob_scale: Probability of adding backchannel at each silence period
+            debug: If True, save augmented audio samples for debugging
+            debug_save_path: Path to save debug audio files
+            debug_max_files: Maximum number of debug files to save
+            target_audio: Agent audio tensor (B, T_audio) - optional, saved for debugging
+        """
+
+        # Check if we should save debug files
+        should_save_debug = False
+        if debug and debug_save_path is not None:
+            os.makedirs(debug_save_path, exist_ok=True)
+            existing_files = glob.glob(os.path.join(debug_save_path, "*.wav"))
+            if len(existing_files) < debug_max_files:
+                should_save_debug = True
+        
+        batch_size, audio_length = batch_audio.shape
+        
+        # Use cached backchannel file list to avoid repeated glob operations
+        if backchannel_folder not in self._backchannel_files_cache:
+            # backchannel_folder already contains the glob pattern (e.g., "/path/to/audio/*")
+            # so we need to add the .wav extension to the pattern
+            backchannel_files = [f for f in glob.glob(backchannel_folder + ".wav")]
+            if not backchannel_files:
+                raise ValueError(f"No backchannel files found matching pattern: {backchannel_folder}.wav")
+            self._backchannel_files_cache[backchannel_folder] = backchannel_files
+        else:
+            backchannel_files = self._backchannel_files_cache[backchannel_folder]
+        # Process each sample in the batch
+        for i in range(batch_size):
+            agent_tokens = target_tokens[i]
+            user_tokens = source_tokens[i]
+            # Find agent BOS and EOS positions
+            agent_bos_positions = torch.where(agent_tokens == self.text_bos_id)[0]
+            agent_eos_positions = torch.where(agent_tokens == self.text_eos_id)[0]
+            if len(agent_bos_positions) == 0:
+                continue  # No agent speech, skip
+            
+            # Convert token positions to audio sample positions
+            # Each token represents frame_length from config (default ~80ms) of audio
+            token_duration_seconds = 0.08  # Frame length
+            samples_per_token = int(token_duration_seconds * self.source_sample_rate)
+            
+            # Build agent turns (BOS-EOS pairs) from agent tokens
+            agent_turns = []  # List of (bos_token, eos_token) tuples
+            
+            for bos_idx in agent_bos_positions:
+                bos_idx = bos_idx.item()
+                # Find the first EOS that comes AFTER this BOS
+                eos_candidates = agent_eos_positions[agent_eos_positions > bos_idx]
+                if len(eos_candidates) > 0:
+                    # Found a valid EOS after this BOS
+                    eos_idx = eos_candidates[0].item()
+                    agent_turns.append((bos_idx, eos_idx))
+                else:
+                    # No EOS found after this BOS (unpaired BOS at the end)
+                    # Mark from BOS to end of sequence as agent speaking
+                    agent_turns.append((bos_idx, len(agent_tokens) - 1))
+            
+            # Build user turns directly from source_tokens BOS/EOS positions
+            user_bos_positions = torch.where(user_tokens == self.user_bos_id)[0]
+            user_eos_positions = torch.where(user_tokens == self.user_eos_id)[0]
+            # Format: [(start_sample, end_sample), ...]
+            user_regions = []
+            
+            for bos_idx in user_bos_positions:
+                bos_idx = bos_idx.item()
+                # Find the first EOS that comes AFTER this BOS
+                eos_candidates = user_eos_positions[user_eos_positions > bos_idx]
+                if len(eos_candidates) > 0:
+                    eos_idx = eos_candidates[0].item()
+                    # Convert token positions to audio samples
+                    user_start_sample = bos_idx * samples_per_token
+                    user_end_sample = min((eos_idx + 1) * samples_per_token, audio_length)
+                    user_regions.append((user_start_sample, user_end_sample))
+                else:
+                    # Unpaired BOS at the end
+                    user_start_sample = bos_idx * samples_per_token
+                    user_end_sample = audio_length
+                    user_regions.append((user_start_sample, user_end_sample))
+            
+            # Add backchannel to each agent turn with some probability
+            # Only 1 backchannel per agent turn, placed randomly within the turn
+            for turn_idx, (bos_token, eos_token) in enumerate(agent_turns):
+                # Convert token positions to audio samples
+                start_sample = bos_token * samples_per_token
+                end_sample = min((eos_token + 1) * samples_per_token, audio_length)
+                
+                if random.random() > backchannel_prob_scale:
+                    continue
+                
+                region_length = end_sample - start_sample
+                if region_length < self.source_sample_rate * 0.3:  # Skip very short regions (<0.3s)
+                    continue
+                
+                # Load a random backchannel audio file
+                backchannel_path = random.choice(backchannel_files)
+                backchannel_audio, sr = sf.read(backchannel_path, dtype='float32')
+
+                # Resample if needed
+                if sr != self.source_sample_rate:
+                    backchannel_audio = librosa.resample(
+                        backchannel_audio, orig_sr=sr, target_sr=self.source_sample_rate
+                    )
+
+                # Convert to mono if stereo
+                if len(backchannel_audio.shape) > 1:
+                    backchannel_audio = np.mean(backchannel_audio, axis=1)
+                
+                backchannel_length = len(backchannel_audio)
+                # Skip if backchannel is longer than the agent's turn
+                if backchannel_length > region_length:
+                    continue
+                
+                # Randomly place the backchannel within the agent's speaking segment
+                # Ensure there's space for the full backchannel
+                max_start_offset = region_length - backchannel_length
+                if max_start_offset > 0:
+                    # Bias placement toward the middle of the agent turn while keeping enough margin
+                    margin = int(0.05 * region_length)
+                    min_offset = max(0, margin)
+                    max_offset = max_start_offset - margin
+                    if max_offset <= min_offset:
+                        min_offset = 0
+                        max_offset = max_start_offset
+                    if max_offset > min_offset:
+                        peak = (min_offset + max_offset) / 2
+                        sampled_offset = random.triangular(min_offset, max_offset, peak)
+                        random_offset = int(round(sampled_offset))
+                    else:
+                        random_offset = min_offset
+                    random_offset = min(max(random_offset, 0), max_start_offset)
+                else:
+                    random_offset = 0
+                
+                insertion_point = start_sample + random_offset
+                
+                # Convert to tensor
+                backchannel_tensor = torch.tensor(
+                    backchannel_audio, dtype=batch_audio.dtype, device=batch_audio.device
+                )
+                
+                # Find the previous user turn to match its loudness
+                # user_regions[turn_idx] corresponds to the user speech before agent_turns[turn_idx]
+                user_rms = None
+                if turn_idx < len(user_regions):
+                    user_start, user_end = user_regions[turn_idx]
+                    # Calculate RMS of the previous user turn
+                    user_segment = batch_audio[i, user_start:user_end]
+                    if len(user_segment) > 0:
+                        user_rms = torch.sqrt(torch.mean(user_segment**2) + 1e-8)
+                
+                # Scale backchannel to match user's loudness (or use SNR-based if no user turn found)
+                backchannel_rms = torch.sqrt(torch.mean(backchannel_tensor**2) + 1e-8)
+                
+                if user_rms is not None and user_rms > 1e-6:
+                    # Match the user's speaking loudness
+                    scaling_factor = user_rms / backchannel_rms
+                else:
+                    # Fallback: use SNR-based scaling with local signal
+                    window_start = max(start_sample, insertion_point - int(0.5 * self.source_sample_rate))
+                    window_end = min(end_sample, insertion_point + backchannel_length + int(0.5 * self.source_sample_rate))
+                    signal_power = torch.mean(batch_audio[i, window_start:window_end]**2) + 1e-8
+                    backchannel_power = backchannel_rms**2
+                    target_backchannel_power = signal_power / (10 ** (snr_db / 10))
+                    scaling_factor = torch.sqrt(target_backchannel_power / backchannel_power)
+                
+                backchannel_tensor = backchannel_tensor * scaling_factor
+                
+                # Add backchannel at the random position within the agent's turn
+                batch_audio[i, insertion_point:insertion_point+backchannel_length] += backchannel_tensor
+        
+        # Save debug audio if enabled and we haven't reached the limit
+        if should_save_debug:
+            try:
+                import time
+                
+                # Get GPU rank for multi-GPU training to avoid filename collisions
+                try:
+                    if torch.distributed.is_initialized():
+                        rank = torch.distributed.get_rank()
+                    else:
+                        rank = 0
+                except:
+                    rank = 0
+                
+                # Save the first sample in the batch
+                timestamp = int(time.time() * 1000000)  # Use microseconds for better uniqueness
+                
+                # Save user audio with backchannel
+                user_debug_filename = f"backchannel_debug_rank{rank}_{timestamp}_user.wav"
+                user_debug_filepath = os.path.join(debug_save_path, user_debug_filename)
+                user_audio_to_save = batch_audio[0].detach().cpu().numpy()
+                sf.write(user_debug_filepath, user_audio_to_save, self.source_sample_rate)
+                logging.info(f"Saved user audio with backchannel to: {user_debug_filepath}")
+                
+                # Save agent audio if available
+                if target_audio is not None:
+                    agent_debug_filename = f"backchannel_debug_rank{rank}_{timestamp}_agent.wav"
+                    agent_debug_filepath = os.path.join(debug_save_path, agent_debug_filename)
+                    agent_audio_to_save = target_audio[0].detach().cpu().numpy()
+                    sf.write(agent_debug_filepath, agent_audio_to_save, self.source_sample_rate)
+                    logging.info(f"Saved agent audio to: {agent_debug_filepath}")
+                
+                should_save_debug = False  # Only save once per batch to avoid too many files
+            except Exception as e:
+                logging.warning(f"Failed to save debug audio: {e}")
+        
+        return batch_audio
 
     def _convert_pad_to_sil(self, target_tokens: torch.Tensor) -> tuple[torch.Tensor, int]:
         """
@@ -1398,31 +1692,24 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         #     sf.write(wav_path, src_audio_np, sample_rate)
         #     print(f"Wrote batch 0 source_audio to {wav_path}")
 
-        # Apply augmentations in order: noise -> room IR -> mic IR -> codec
-        # Each augmentation has its own independent condition and flag
-        
-        # 1. Noise augmentation (controlled by use_old_noise_aug flag)
-        if self.cfg.get('use_old_noise_aug', None) and self.training and self._is_noise_augmentation_dataset(batch["formatter"][0]):
+        # Apply augmentations in order: compose aug (background noise + Gain/Pitch/LPF) -> room IR -> mic IR -> codec
+
+        # 1. Noise + audio transforms via build_audio_aug (use_old_noise_aug and/or use_nsynth_noise_aug)
+        if (
+            (self.cfg.get('use_old_noise_aug', None) or self.cfg.get('use_nsynth_noise_aug', False))
+            and self.training
+            and self._is_noise_augmentation_dataset(batch["formatter"][0])
+            and getattr(self, "audio_augmenter", None) is not None
+        ):
             noise_prob = self.cfg.get('old_noise_prob', 0.99)
-            noise_min_snr = self.cfg.get('old_noise_min_snr', 20)
-            noise_max_snr = self.cfg.get('old_noise_max_snr', 50)
             noise_path = self.cfg.get('old_noise_aug_path', None)
-            noise_path_name = "*"
-            
-            if noise_prob and random.random() < noise_prob and noise_path:
-                import os
-                batch["source_audio"] = self.audio_augmenter.add_noise_to_batch(
-                    batch["source_audio"],
-                    os.path.join(noise_path, noise_path_name),
-                    snr_db=random.randint(noise_min_snr, noise_max_snr),
-                    noise_prob_scale_user=self.cfg.get('noise_prob_scale_user', 0.3),
-                    noise_prob_scale_user_min_snr=self.cfg.get('noise_prob_scale_user_min_snr', -15),
-                    noise_prob_scale_user_max_snr=self.cfg.get('noise_prob_scale_user_max_snr', 24),
-                    snr_measure_dur=self.cfg.get('snr_measure_dur', 0.0),
-                    noise_resample=self.cfg.get('noise_resample', True),
-                    noise_prob_low_pass=self.cfg.get('noise_prob_low_pass', 0.1),
+            noise_files = self._resolve_noise_files_for_build_audio_aug(noise_path)
+            if noise_prob and random.random() < noise_prob and noise_files:
+                batch["source_audio"] = self.audio_augmenter.build_audio_aug(
+                    audio_samples=batch["source_audio"],
+                    noise_files=noise_files,
                 )
-        
+
         # 2. Room impulse response augmentation
         if self.cfg.get('use_room_ir_aug', None) and self.training and self._is_noise_augmentation_dataset(batch["formatter"][0]):
             roomir_prob = self.cfg.get('roomir_prob', 0.0)
@@ -1436,7 +1723,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                     use_loudness_norm=self.cfg.get('roomir_use_loudness_norm', True),
                 )
         
-        # 3. Microphone impulse response augmentation
+        # 4. Microphone impulse response augmentation
         if self.cfg.get('use_mic_ir_aug', None) and self.training and self._is_noise_augmentation_dataset(batch["formatter"][0]):
             micir_prob = self.cfg.get('micir_prob', 0.0)
             micir_path = self.cfg.get('micir_aug_path', None)
@@ -1449,7 +1736,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                     use_loudness_norm=self.cfg.get('micir_use_loudness_norm', True),
                 )
         
-        # 4. Codec augmentation
+        # 5. Codec augmentation
         if self.cfg.get('use_codec_aug', None) and self.training and self._is_noise_augmentation_dataset(batch["formatter"][0]):
             codec_prob = self.cfg.get('codec_prob', 0.0)
             codec_settings = self.cfg.get('codec_settings', None)
@@ -1476,7 +1763,29 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         #     print(f"Wrote batch 0 source_audio to {wav_path}")
         #     import pdb; pdb.set_trace()
 
-        
+        # Add backchannel augmentation (only during training, when agent is talking / user is silent)
+        if self.cfg.get('backchannel_prob', None) and self.cfg.backchannel_prob > 0:
+            if (
+                self.training
+                and "source_tokens" in batch  # Ensure source_tokens exists
+                and batch["formatter"][0] != 's2s_duplex_overlap_as_s2s_duplex'  # Skip overlap data (already has real backchannels)
+                and batch["formatter"][0] != 'nemo_tarred_to_duplex'  # Skip ASR datasets
+                and batch["formatter"][0] != 'lhotse_tts_as_repeat_after_me'  # Skip TTS repeat-after-me (synthetic data)
+                and random.random() < self.cfg.backchannel_prob
+            ):
+                batch["source_audio"] = self.add_backchannel_to_batch(
+                    batch["source_audio"],
+                    batch["target_tokens"],
+                    batch["source_tokens"],
+                    os.path.join(self.cfg.backchannel_file_path, "*"),
+                    snr_db=self.cfg.get('backchannel_snr_db', 15),
+                    backchannel_prob_scale=self.cfg.get('backchannel_prob_scale', 0.5),
+                    debug=self.cfg.get('backchannel_debug', False),
+                    debug_save_path=self.cfg.get('backchannel_debug_path', None),
+                    debug_max_files=self.cfg.get('backchannel_debug_max_files', 16),
+                    target_audio=batch.get("target_audio", None),
+                )
+
         if self.cfg.get("asr_log", False):
             logging.info(f"User audio dtype: {batch['source_audio'].dtype}, device: {batch['source_audio'].device}, shape: {batch['source_audio'].shape}")
         
@@ -3710,7 +4019,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 )
                 inference_state["gen_text"][:, t] = torch.where(is_prompt_position, inference_state["gen_text"][:, t], generated_tokens)
 
-                # Function channel always uses greedy (not affected by text sampling params)
+                # Function channel: use separate head if enabled
                 if self.use_function_head:
                     generated_function_tokens = ans["function_logits"][:, -1].argmax(dim=-1)
 
@@ -4623,7 +4932,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
     ) -> dict[str, torch.Tensor]:
         """
         Autoregressive prediction (simple loop like original).
-
+        
         For function calling: expansion/pre-filling is handled by helper function.
         """
         if self.cfg.get("fc_log", False):
