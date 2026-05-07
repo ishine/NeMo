@@ -58,6 +58,9 @@ class AudioAugmenter:
         self._roomir_files_cache = {}
         self._micir_files_cache = {}
         self._lowpass_filter_cache = {}
+        # build_audio_aug was constructing a new Compose + AddBackgroundNoise every step;
+        # cache pipelines keyed by (sample_rate, noise file list) so AddBackgroundNoise LRU/cache persists.
+        self._compose_aug_cache = {}
 
     def add_noise_to_batch(
         self,
@@ -410,48 +413,42 @@ class AudioAugmenter:
             with fp32_precision():
                 audio_samples = self.apply_eq(audio_samples, eq)
 
-        # Define augmentation
-        apply_augmentation = Compose(
-            transforms=[
-                AddBackgroundNoise(
-                    sounds_path=[str(f) for f in noise_files],
-                    min_snr_db=5.0,
-                    max_snr_db=25.0,
-                    p=0.8,
-                ),
-                Gain(
-                    min_gain_in_db=-6,
-                    max_gain_in_db=6,
-                    p=0.8,
-                ),
-                PitchShift(
-                    min_transpose_semitones=-1.0,
-                    max_transpose_semitones=1.0,
-                    sample_rate=self.sample_rate,
-                    p=0.2,
-                ),
-                # Shift(
-                #     min_shift=-0.015,
-                #     max_shift=0.015,
-                #     shift_unit="seconds",
-                #     rollover=False,
-                #     p=0.3,
-                # ),
-                # BandPassFilter(
-                #     min_center_frequency=200,
-                #     max_center_frequency=4000,
-                #     min_bandwidth_fraction=0.5,
-                #     max_bandwidth_fraction=1.99,
-                #     p=0.7,
-                # ),
-                LowPassFilter(
-                    min_cutoff_freq=5000.0,
-                    max_cutoff_freq=7500.0,
-                    p=0.4
-                ),
-                # PolarityInversion(p=0.5),
-            ]
-        )
+        # Reuse one Compose + AddBackgroundNoise per (sr, noise set); rebuilding every step
+        # rescans the filesystem and drops in-memory noise LRU — major step-time regression.
+        noise_key = tuple(sorted(str(f) for f in noise_files))
+        compose_key = (self.sample_rate, noise_key)
+        if compose_key not in self._compose_aug_cache:
+            self._compose_aug_cache[compose_key] = Compose(
+                transforms=[
+                    AddBackgroundNoise(
+                        sounds_path=list(noise_key),
+                        min_snr_db=5.0,
+                        max_snr_db=25.0,
+                        p=0.2,
+                        cache_audio=True,
+                        max_cache_items=512,
+                        # DNS-style continuous noise: simple RMS is much faster than silence-aware windows.
+                        silence_aware_rms=False,
+                    ),
+                    Gain(
+                        min_gain_in_db=-6,
+                        max_gain_in_db=6,
+                        p=0.8,
+                    ),
+                    PitchShift(
+                        min_transpose_semitones=-1.0,
+                        max_transpose_semitones=1.0,
+                        sample_rate=self.sample_rate,
+                        p=0.2,
+                    ),
+                    LowPassFilter(
+                        min_cutoff_freq=5000.0,
+                        max_cutoff_freq=7500.0,
+                        p=0.4
+                    ),
+                ]
+            )
+        apply_augmentation = self._compose_aug_cache[compose_key]
 
         # Apply augmentation
         with fp32_precision():
