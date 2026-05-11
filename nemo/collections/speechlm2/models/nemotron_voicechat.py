@@ -594,7 +594,7 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
         asr_branch_decode = self.stt_model.cfg.get("asr_branch_decode", False) if hasattr(self.stt_model.cfg, "get") else getattr(self.stt_model.cfg, "asr_branch_decode", False)
         if isinstance(asr_branch_decode, str):
             asr_branch_decode = asr_branch_decode.strip().lower() in ("true", "1", "yes")
-        if asr_branch_decode and self.stt_model.predict_user_text:
+        if asr_branch_decode and self.cfg.get("rnnt_predict_user_text", False):
             rnnt_dec = getattr(self.stt_model, "rnnt_decoder", None)
             rnnt_joint = getattr(self.stt_model, "rnnt_joint", None)
             if rnnt_dec is not None and rnnt_joint is not None:

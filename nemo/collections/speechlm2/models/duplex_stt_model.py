@@ -4419,9 +4419,9 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 src_text_cleaned = src_text_asr_head
                 src_text_rnnt = None
         else:
-            src_text_cleaned = None
             src_text_asr_head = None
-            src_text_rnnt = None
+            src_text_rnnt = inference_state.get("rnnt_src_text")
+            src_text_cleaned = src_text_rnnt
 
         # Build function-channel predictions with prefilled responses masked out
         gen_function_pred = gen_function
@@ -4962,7 +4962,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         asr_branch_decode = self.cfg.get("asr_branch_decode", False)
         if isinstance(asr_branch_decode, str):
             asr_branch_decode = asr_branch_decode.strip().lower() in ("true", "1", "yes")
-        if asr_branch_decode and self.predict_user_text:
+        if asr_branch_decode and self.cfg.get("rnnt_predict_user_text", False):
             rnnt_dec = getattr(self, "rnnt_decoder", None)
             rnnt_joint = getattr(self, "rnnt_joint", None)
             if rnnt_dec is not None and rnnt_joint is not None:
