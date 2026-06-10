@@ -439,7 +439,7 @@ class AudioAugmenter:
                         min_transpose_semitones=-1.0,
                         max_transpose_semitones=1.0,
                         sample_rate=self.sample_rate,
-                        p=0.2,
+                        p=0.0,
                     ),
                     LowPassFilter(
                         min_cutoff_freq=5000.0,

@@ -171,6 +171,129 @@ def normalize_numbers(text):
         return text   # fallback: return input unchanged
 
 
+# ============================================================================
+# NeMo WFST text normalizer (replacement for the regex-based normalize_numbers).
+#
+# The regex normalizer above converts e.g. "Washington, DC" -> "Washington, six hundred"
+# because the _ROMAN_RE matches any [IVXLCDM]{2,} surrounded by non-uppercase chars.
+# NeMo's nemo_text_processing.text_normalization.normalize.Normalizer is WFST-based
+# and only converts Roman numerals in valid Roman contexts.
+#
+# Design: per-worker singleton + LRU cache. Each dataloader worker forks the parent
+# and lazily initialises one Normalizer on its first call; subsequent calls hit the
+# OS-level WFST grammar cache + an in-process LRU cache, so cost amortises to a
+# dict lookup for repeated strings (which dominate slot-filled FC templates).
+# ============================================================================
+import functools as _functools
+import os as _os
+import threading as _threading
+
+_NEMO_NORMALIZER = None
+_NEMO_NORMALIZER_KEY = None  # tuple identifying the active config so we rebuild on change
+_NEMO_NORMALIZER_LOCK = _threading.Lock()
+_NEMO_NORMALIZER_WARNED = False
+
+
+def _build_nemo_normalizer(input_case: str, lang: str, config_path: str = None, cache_dir: str = None):
+    """Construct a NeMo text Normalizer once per process. Heavy: 5-90 s on cold start.
+
+    Pre-warms with a dummy call so the WFST grammars are JIT-compiled before any real text
+    hits the dataloader.
+    """
+    from nemo_text_processing.text_normalization.normalize import Normalizer  # local import
+    if config_path:
+        from omegaconf import OmegaConf
+        from hydra.utils import instantiate
+        cfg = OmegaConf.load(config_path)
+        normalizer = instantiate(cfg)
+    else:
+        kwargs = dict(input_case=input_case, lang=lang)
+        if cache_dir:
+            kwargs["cache_dir"] = cache_dir
+        normalizer = Normalizer(**kwargs)
+    # Pre-warm: forces grammar compilation now (during init) instead of on the first real cut.
+    try:
+        normalizer.normalize("hello world 1", punct_pre_process=True, punct_post_process=True)
+    except Exception:
+        pass
+    return normalizer
+
+
+def _get_nemo_normalizer(input_case: str = "cased", lang: str = "en",
+                        config_path: str = None, cache_dir: str = None):
+    """Thread-safe singleton getter. Returns the same Normalizer for all calls
+    in this process; rebuilds only if the (input_case, lang, config_path) key changes.
+    """
+    global _NEMO_NORMALIZER, _NEMO_NORMALIZER_KEY
+    key = (input_case, lang, config_path, cache_dir)
+    if _NEMO_NORMALIZER is not None and _NEMO_NORMALIZER_KEY == key:
+        return _NEMO_NORMALIZER
+    with _NEMO_NORMALIZER_LOCK:
+        if _NEMO_NORMALIZER is None or _NEMO_NORMALIZER_KEY != key:
+            _NEMO_NORMALIZER = _build_nemo_normalizer(input_case, lang, config_path, cache_dir)
+            _NEMO_NORMALIZER_KEY = key
+            logging.info(
+                f"[nemo_text_norm] Initialised Normalizer "
+                f"(input_case={input_case}, lang={lang}, config_path={config_path}, "
+                f"cache_dir={cache_dir}, pid={_os.getpid()})"
+            )
+    return _NEMO_NORMALIZER
+
+
+@_functools.lru_cache(maxsize=20000)
+def _nemo_normalize_cached(text: str) -> str:
+    """LRU-cached wrapper. The slot-filled FC templates repeat the same supervision text
+    across many cuts, so a per-process cache gets a very high hit rate.
+    """
+    return _NEMO_NORMALIZER.normalize(text, punct_pre_process=True, punct_post_process=True)
+
+
+def normalize_text_nemo(text: str, input_case: str = "cased", lang: str = "en",
+                       config_path: str = None, cache_dir: str = None) -> str:
+    """Drop-in replacement for normalize_numbers() that uses NeMo's WFST text normalizer.
+
+    Falls back to the regex normalize_numbers() if nemo_text_processing cannot be
+    imported (so training never crashes due to a missing optional dep).
+    """
+    global _NEMO_NORMALIZER_WARNED
+    if not text or not text.strip():
+        return text
+    try:
+        _get_nemo_normalizer(input_case=input_case, lang=lang,
+                             config_path=config_path, cache_dir=cache_dir)
+        return _nemo_normalize_cached(text)
+    except Exception as e:
+        if not _NEMO_NORMALIZER_WARNED:
+            logging.warning(
+                f"[nemo_text_norm] Failed to use NeMo text normalizer "
+                f"({type(e).__name__}: {e}); falling back to regex normalize_numbers() "
+                f"for this process. Install with: pip install pynini nemo_text_processing"
+            )
+            _NEMO_NORMALIZER_WARNED = True
+        return normalize_numbers(text)
+
+
+def normalize_text(text: str,
+                   use_nemo_text_norm: bool = False,
+                   use_numbers_norm: bool = False,
+                   nemo_text_norm_input_case: str = "cased",
+                   nemo_text_norm_lang: str = "en",
+                   nemo_text_norm_config_path: str = None,
+                   nemo_text_norm_cache_dir: str = None) -> str:
+    """Single entry point: pick backend based on flags. NeMo TN takes precedence."""
+    if use_nemo_text_norm:
+        return normalize_text_nemo(
+            text,
+            input_case=nemo_text_norm_input_case,
+            lang=nemo_text_norm_lang,
+            config_path=nemo_text_norm_config_path,
+            cache_dir=nemo_text_norm_cache_dir,
+        )
+    if use_numbers_norm:
+        return normalize_numbers(text)
+    return text
+
+
 # ===== Function Calling Helper Functions =====
 
 def _fc_system_prompt_needs_augment(prompt_text: str) -> bool:
@@ -578,6 +701,14 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         self.cfg = cfg
         self.model_cfg = model_cfg
         self.use_numbers_norm = model_cfg.get("use_numbers_norm", False)
+        # New flag: when True, use NeMo's WFST text normalizer (nemo_text_processing) which
+        # is context-aware (won't convert "DC" -> 600 in "Washington, DC"). Takes precedence
+        # over use_numbers_norm. See normalize_text_nemo() above.
+        self.use_nemo_text_norm = model_cfg.get("use_nemo_text_norm", False)
+        self.nemo_text_norm_input_case = model_cfg.get("nemo_text_norm_input_case", "cased")
+        self.nemo_text_norm_lang = model_cfg.get("nemo_text_norm_lang", "en")
+        self.nemo_text_norm_config_path = model_cfg.get("nemo_text_norm_config_path", None)
+        self.nemo_text_norm_cache_dir = model_cfg.get("nemo_text_norm_cache_dir", None)
         self.debug_fc = model_cfg.get("debug_fc", False) if model_cfg is not None else False
         self.fc_log = model_cfg.get("fc_log", False) if model_cfg is not None else False
         # When True (default), normalize <TOOLCALL> content so "arguments" are parsed from JSON string
@@ -1227,6 +1358,11 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
                 eos_id=self.agent_eos_id,
                 remove_timestamps=True,
                 use_numbers_norm=self.use_numbers_norm,
+                use_nemo_text_norm=self.use_nemo_text_norm,
+                nemo_text_norm_input_case=self.nemo_text_norm_input_case,
+                nemo_text_norm_lang=self.nemo_text_norm_lang,
+                nemo_text_norm_config_path=self.nemo_text_norm_config_path,
+                nemo_text_norm_cache_dir=self.nemo_text_norm_cache_dir,
                 early_interruption_flag_from_cfg=self.early_interruption_prob > 0,
                 skip_eos=self.fix_eos_placements,
                 mcq_agent_text_delay=mcq_agent_text_delay,
@@ -1870,6 +2006,11 @@ def collate_token_channel(
     user_bos_id: int = None,
     agent_bos_id: int = None,
     use_numbers_norm: bool = False,
+    use_nemo_text_norm: bool = False,
+    nemo_text_norm_input_case: str = "cased",
+    nemo_text_norm_lang: str = "en",
+    nemo_text_norm_config_path: str = None,
+    nemo_text_norm_cache_dir: str = None,
     early_interruption_flag_from_cfg: bool = None,
     skip_eos: bool = False,
     agent_token_channel: torch.Tensor = None,
@@ -1897,8 +2038,13 @@ def collate_token_channel(
             word_align_position=word_align_position,
             remove_timestamps=remove_timestamps,
             user_bos_id=user_bos_id,
-            agent_bos_id=agent_bos_id, 
+            agent_bos_id=agent_bos_id,
             use_numbers_norm=use_numbers_norm,
+            use_nemo_text_norm=use_nemo_text_norm,
+            nemo_text_norm_input_case=nemo_text_norm_input_case,
+            nemo_text_norm_lang=nemo_text_norm_lang,
+            nemo_text_norm_config_path=nemo_text_norm_config_path,
+            nemo_text_norm_cache_dir=nemo_text_norm_cache_dir,
             skip_eos=skip_eos,
             cut_agent_token_channel=agent_token_channel[cut_idx] if agent_token_channel is not None else None,
             cut_agent_token_channel_length=agent_token_channel_lengths[cut_idx] if agent_token_channel_lengths is not None else None,
@@ -2097,6 +2243,11 @@ def build_token_channel(
         agent_bos_id: int = None,
         add_eos_for_interruption: bool = False,
         use_numbers_norm: bool = False,
+        use_nemo_text_norm: bool = False,
+        nemo_text_norm_input_case: str = "cased",
+        nemo_text_norm_lang: str = "en",
+        nemo_text_norm_config_path: str = None,
+        nemo_text_norm_cache_dir: str = None,
         skip_eos: bool = False,
         cut_agent_token_channel: torch.Tensor = None,
         cut_agent_token_channel_length: torch.Tensor = None,
@@ -2130,8 +2281,15 @@ def build_token_channel(
             available_frames_for_text = eospos - pos
 
             text = supervision.text
-            if use_numbers_norm:
-                text = normalize_numbers(text)
+            text = normalize_text(
+                text,
+                use_nemo_text_norm=use_nemo_text_norm,
+                use_numbers_norm=use_numbers_norm,
+                nemo_text_norm_input_case=nemo_text_norm_input_case,
+                nemo_text_norm_lang=nemo_text_norm_lang,
+                nemo_text_norm_config_path=nemo_text_norm_config_path,
+                nemo_text_norm_cache_dir=nemo_text_norm_cache_dir,
+            )
 
             # Use different bos_id for user and agent
             text_ids = torch.as_tensor([bos_id] + _text_to_ids(text, tokenizer, pad_id, available_frames_for_text=available_frames_for_text, word_align_position=word_align_position, remove_timestamps=remove_timestamps))
