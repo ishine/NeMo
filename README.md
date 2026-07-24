@@ -189,3 +189,21 @@ The script writes intermediate and final checkpoints under:
 Use a local wrapper outside the repository if a machine needs fixed paths.
 Keeping such a wrapper outside the Speech source tree avoids committing
 cluster-specific paths.
+
+## Known Limitations
+
+NemotronLabs VoiceChat is trained with audio context windows of up to two minutes. Conversational context beyond this window may not be retained reliably.
+
+NemotronLabs VoiceChat has been optimized to balance general knowledge and natural conversation. Consequently, it may not perform as well as its LLM backbone, NVIDIA Nemotron Nano v2, in terms of knowledge, instruction-following capabilities, and safety.
+
+The model may make reasoning errors or provide incorrect or incomplete information. NemotronLabs VoiceChat was not explicitly trained for reasoning or alignment, so its performance on tasks requiring multi-step reasoning, arithmetic, or safety-aligned behavior may be limited.
+
+The model may not yet be able to handle user backchanneling systematically.
+
+For tool calling, we recommend using no more than five tools per session, as additional tools may degrade performance. The model cannot yet reliably call multiple tools simultaneously. Long tool responses may delay the agent's speech; on-hold messages can help mitigate these delays. Users cannot interrupt the agent while a tool call is being executed. In mixed conversations that combine general chat and tool requests, the model may answer from its own knowledge instead of calling the appropriate tool.
+
+Finally, the model is not suitable for noisy or highly reverberant environments, especially those with background speech.
+
+For TTS-safe text, system prompts must contain only ASCII characters. Avoid Unicode punctuation and symbols, including but not limited to em dashes (U+2014), en dashes (U+2013), degree symbols, and emoji. For example, write "72 degrees Fahrenheit" instead of using a degree symbol.
+
+External API and tool responses must be converted into concise, ASCII-only, TTS-friendly sentences before being passed to the model.
