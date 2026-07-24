@@ -8,9 +8,16 @@ The model operates on audio signals, which are encoded using a fast conformer mo
 
 ## Hardware Requirements
 
-- NVIDIA GPU 
+- NVIDIA GPU with at least 80 GB of memory
 
 ## Quickstart
+
+This guide explains how to test the NVIDIA Nemotron Labs VoiceChat model using either of the following approaches:
+
+- Load the [Hugging Face (HF) checkpoint](https://huggingface.co/nvidia/NVIDIA-NemotronLabs-VoiceChat-12B) for quick, non-interactive testing with offline batch inference.
+- Use an optimized NVIDIA inference container for interactive audio testing with the same HF checkpoint.
+
+The available code can also be used for training. The resulting checkpoint can then be converted and used for inference as described above. Details on how to perform this conversion are provided in [Combine STT, TTS, and RNNT Checkpoints](#combine-stt-tts-and-rnnt-checkpoints).
 
 ### Offline Evaluation (HF Checkpoint)
 
@@ -38,13 +45,13 @@ Dockerfiles and patches live under `docker/voicechat/` in this repository.
 ```bash
 cd "$NEMO_DIR/docker/voicechat"
 
-docker build --no-cache -f Dockerfile.voicechat -t voicechat:v1.1 .
+docker build --no-cache -f Dockerfile.voicechat -t voicechat:v1.0 .
 ```
 
 Optionally save the image as a portable tar (choose any output path):
 
 ```bash
-docker save voicechat:v1.1 -o /path/to/voicechat-v1.1.tar
+docker save voicechat:v1.0 -o /path/to/voicechat-v1.0.tar
 ```
 
 #### 3. Start an interactive GPU container (on the host)
@@ -57,7 +64,7 @@ export NEMO_DIR=/path/to/Speech
 export NEMO_VOICECHAT_WORKSPACE=$HOME          # host dir mounted into the container
 # export NEMO_VOICECHAT_USE_SUDO=1             # if your user is not in the docker group
 # Optional: if the image is not already loaded locally, point to your saved tar
-# export NEMO_VOICECHAT_CONTAINER_TAR=/path/to/voicechat-v1.1.tar
+# export NEMO_VOICECHAT_CONTAINER_TAR=/path/to/voicechat-v1.0.tar
 
 bash "$NEMO_DIR/examples/speechlm2/create_interactive_node_local_docker.sh"
 ```
@@ -81,7 +88,7 @@ python3 "$NEMO_DIR/examples/speechlm2/offline_voicechat_fc_infer.py" \
   --code-dir "$NEMO_DIR"
 ```
 
-### NIM Deployment 
+### Optimized NVIDIA inference container for interactive streaming deployment
 
 ## Code Overview
 
@@ -162,8 +169,8 @@ bash "$NEMO_DIR/examples/speechlm2/combine_ckpt.sh" \
   --speaker-wav "$WORKSPACE/speaker/speaker.wav" \
   --speaker-name my_speaker \
   --output-root "$WORKSPACE/output" \
-  --docker-image-tar /path/to/voicechat-v1.1.tar \
-  --docker-image voicechat:v1.1 \
+  --docker-image-tar /path/to/voicechat-v1.0.tar \
+  --docker-image voicechat:v1.0 \
   --tag my_exp \
   --step 10000 \
   --cache "$WORKSPACE/cache" \

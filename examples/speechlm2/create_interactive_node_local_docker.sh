@@ -3,7 +3,7 @@
 #
 # Environment (all optional):
 #   NEMO_DIR                     Speech repo root (default: parent of examples/speechlm2)
-#   NEMO_VOICECHAT_IMAGE         Docker image tag (default: voicechat:v1.1)
+#   NEMO_VOICECHAT_IMAGE         Docker image tag (default: voicechat:v1.0)
 #   NEMO_VOICECHAT_CONTAINER_TAR Path to saved image .tar (used if image tag is missing)
 #   NEMO_VOICECHAT_WORKSPACE     Host dir mounted read-write (default: $HOME)
 #   NEMO_VOICECHAT_USE_SUDO      Set to 1 to prefix docker with sudo
@@ -14,7 +14,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CODE_DIR="${NEMO_DIR:-$(cd "${SCRIPT_DIR}/../.." && pwd)}"
-IMAGE="${NEMO_VOICECHAT_IMAGE:-voicechat:v1.1}"
+IMAGE="${NEMO_VOICECHAT_IMAGE:-voicechat:v1.0}"
 CONTAINER_TAR="${NEMO_VOICECHAT_CONTAINER_TAR:-}"
 WORKSPACE="${NEMO_VOICECHAT_WORKSPACE:-${HOME}}"
 EXTRA_MOUNTS="${NEMO_VOICECHAT_EXTRA_MOUNTS:-}"
