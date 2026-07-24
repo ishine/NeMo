@@ -61,6 +61,8 @@ DEFAULT_SYSTEM_MESSAGE = (
     "Never invent or call a tool name that is not literally in <AVAILABLE_TOOLS>."
     "\n\nTool-call arguments must be values the user spoke. "
     "If a required argument is missing, ask the user; never guess."
+    "\n\nIf a tool call fails or returns an error, do not retry the tool call for the same request. "
+    "Tell the user that the API has an issue."
 )
 
 DEFAULT_TOOLS = [

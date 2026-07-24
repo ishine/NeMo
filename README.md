@@ -99,7 +99,11 @@ python3 "$NEMO_DIR/examples/speechlm2/offline_voicechat_fc_infer.py" \
 ### Function-calling system prompt example
 
 The default Jinja template appends the available tools and tool-call protocol to
-the supplied system message. For example, the rendered prompt can look like:
+the supplied system message. See
+`examples/speechlm2/offline_voicechat_fc_infer.py` for the default
+function-calling system prompt and prompt construction logic.
+
+For example, the rendered prompt can look like:
 
 ```text
 You are an AI voice assistant developed by NVIDIA. Your name is NVIDIA Voice Chat. Your job is to be helpful and harmless and have engaging conversations in English. Maintain a warm and friendly tone. Keep the dialogue open and ongoing. Be clear and direct, especially when answering yes or no questions and multiple-choice questions. Avoid long answers unless the user asks you to provide details or context. You must provide diverse responses and rephrase answers if the user asks the same question. DO NOT interrupt the user when they are speaking, let them finish their turn before answering.
