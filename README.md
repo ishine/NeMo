@@ -1,4 +1,4 @@
-> **Note:** This branch provides resources for working with the [Nemotron Labs VoiceChat model on Hugging Face](https://huggingface.co/nvidia).
+> **Note:** This branch provides resources for working with the [Nemotron Labs VoiceChat model on Hugging Face](https://huggingface.co/nvidia/NVIDIA-NemotronLabs-VoiceChat-12B).
 
 ## Introduction
 
