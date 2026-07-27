@@ -1,0 +1,10 @@
+{
+  "tool_name": "generate_random_number",
+  "arguments": {
+    "min": 1,
+    "max": 50
+  },
+  "response": {
+    "result": 20
+  }
+}

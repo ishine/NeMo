@@ -82,6 +82,8 @@ python3 "$NEMO_DIR/examples/speechlm2/offline_voicechat_infer.py" \
 # Function calling
 WAV="$NEMO_DIR/examples/speechlm2/sample_audio/sample_fc.wav"
 
+API_RESPONSE_JSON="$NEMO_DIR/examples/speechlm2/function_calling/random_number_response.json"
+
 python3 "$NEMO_DIR/examples/speechlm2/offline_voicechat_fc_infer.py" \
   --checkpoint "$CHECKPOINT" --wav "$WAV" \
   --api-response-json "$API_RESPONSE_JSON" --output-dir "$OUTPUT_DIR" \
