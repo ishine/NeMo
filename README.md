@@ -14,14 +14,15 @@ The model operates on audio signals, which are encoded using a fast conformer mo
 
 This guide explains how to test the NVIDIA Nemotron Labs VoiceChat model using either of the following approaches:
 
-- Load the [Hugging Face (HF) checkpoint](https://huggingface.co/nvidia/NVIDIA-NemotronLabs-VoiceChat-12B) for quick, non-interactive testing with offline batch inference.
+- Load the [Hugging Face (HF) checkpoint](https://huggingface.co/nvidia/NVIDIA-NemotronLabs-VoiceChat-12B) for quick, non-interactive testing with offline batch inference using an Anaconda environment.
 - Use an optimized NVIDIA inference container for interactive audio testing with the same HF checkpoint.
 
 The available code can also be used for training. The resulting checkpoint can then be converted and used for inference as described above. Details on how to perform this conversion are provided in [Combine STT, TTS, and RNNT Checkpoints](#combine-stt-tts-and-rnnt-checkpoints).
 
 ### Offline Evaluation (HF Checkpoint)
 
-Run offline speech-to-speech inference from a Hugging Face-format checkpoint. This requires an NVIDIA GPU, Docker, and the Speech source tree.
+Run offline speech-to-speech inference from a Hugging Face-format checkpoint.
+This requires an NVIDIA GPU, Anaconda/Miniconda, and the Speech source tree.
 
 #### 1. Clone the Speech repository
 
@@ -38,53 +39,53 @@ git switch nemotron-labs-voicechat
 export NEMO_DIR="$(pwd)"
 ```
 
-#### 2. Create the Docker image (once per machine)
-
-Dockerfiles and patches live under `docker/voicechat/` in this repository.
+#### 2. Create the Anaconda environment (once per machine)
 
 ```bash
-cd "$NEMO_DIR/docker/voicechat"
-
-docker build --no-cache -f Dockerfile.voicechat -t voicechat:v1.0 .
+conda create -y -n voicechat python=3.12
+conda activate voicechat
+# torch 2.10 is deliberate: it is the newest release with prebuilt mamba-ssm /
+# causal-conv1d wheels AND a matching torchaudio. Newer torch = 20+ min of nvcc.
+pip install torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0
+pip install "nemo_toolkit[all]==2.6.2"
+# megatron-core 0.18.2 asserts nvidia-resiliency-ext>=0.6.0 while NeMo pins
+# 0.5.0, which crashes on import. It is training-only, so remove it.
+pip uninstall -y nvidia-resiliency-ext
+# torchcodec 0.10 pairs with torch 2.10 (torchaudio 2.10 delegates wav I/O to
+# it). It declares no torch dependency, so an unpinned install breaks silently.
+pip install transformers==4.56.0 tokenizers==0.22.0 lhotse==1.32.2 \
+            huggingface-hub==0.34.4 hf-xet==1.1.9 torchcodec==0.10.0 \
+            torch_audiomentations jinja2
+# --no-deps is required: mamba-ssm 2.3.2 hard-requires tilelang + quack-kernels
+# (Mamba-3 only, unused here) and resolving them upgrades torch, which orphans
+# the prebuilt .so ("undefined symbol: ...materialize_cow_storage").
+pip install ninja packaging wheel einops
+pip install --no-build-isolation --no-deps causal-conv1d==1.6.2.post1 mamba-ssm==2.3.2.post1
 ```
 
-Optionally save the image as a portable tar (choose any output path):
+Verify the install (expect: `2.10.0+cu128 True True <your GPU>`):
 
 ```bash
-docker save voicechat:v1.0 -o /path/to/voicechat-v1.0.tar
+python -c "import torch, torchcodec; from transformers.utils.import_utils import is_mamba_2_ssm_available as m, is_causal_conv1d_available as c; print(torch.__version__, m(), c(), torch.cuda.get_device_name(0))"
 ```
 
-#### 3. Start an interactive GPU container (on the host)
+#### 3. Run offline inference
 
-If you opened a new shell, set `NEMO_DIR` to the absolute path of the cloned
-Speech repository before starting the container:
-
-```bash
-export NEMO_DIR=/path/to/Speech
-export NEMO_VOICECHAT_WORKSPACE=$HOME          # host dir mounted into the container
-# export NEMO_VOICECHAT_USE_SUDO=1             # if your user is not in the docker group
-# Optional: if the image is not already loaded locally, point to your saved tar
-# export NEMO_VOICECHAT_CONTAINER_TAR=/path/to/voicechat-v1.0.tar
-
-bash "$NEMO_DIR/examples/speechlm2/create_interactive_node_local_docker.sh"
-```
-
-#### 4. Run offline inference
+Activate the environment if needed (`conda activate voicechat`), then:
 
 ```bash
 # General
 WAV="$NEMO_DIR/examples/speechlm2/sample_audio/sample_general.wav"
 
-python3 "$NEMO_DIR/examples/speechlm2/offline_voicechat_infer.py" \
+python "$NEMO_DIR/examples/speechlm2/offline_voicechat_infer.py" \
   --checkpoint "$CHECKPOINT" --wav "$WAV" \
   --output-dir "$OUTPUT_DIR" --code-dir "$NEMO_DIR"
 
 # Function calling
 WAV="$NEMO_DIR/examples/speechlm2/sample_audio/sample_fc.wav"
-
 API_RESPONSE_JSON="$NEMO_DIR/examples/speechlm2/function_calling/random_number_response.json"
 
-python3 "$NEMO_DIR/examples/speechlm2/offline_voicechat_fc_infer.py" \
+python "$NEMO_DIR/examples/speechlm2/offline_voicechat_fc_infer.py" \
   --checkpoint "$CHECKPOINT" --wav "$WAV" \
   --api-response-json "$API_RESPONSE_JSON" --output-dir "$OUTPUT_DIR" \
   --code-dir "$NEMO_DIR"
@@ -104,6 +105,11 @@ The default Jinja template appends the available tools and tool-call protocol to
 the supplied system message. See
 `examples/speechlm2/offline_voicechat_fc_infer.py` for the default
 function-calling system prompt and prompt construction logic.
+
+System prompts and API/tool responses must be ASCII-only. Avoid Unicode
+punctuation and symbols (for example em dashes, en dashes, degree symbols, and
+emoji). Convert tool responses into concise, TTS-friendly ASCII sentences before
+passing them to the model.
 
 For example, the rendered prompt can look like:
 
@@ -139,8 +145,8 @@ Based on the tool responses, you can call additional tools if needed, correct to
 
 ## Combine STT, TTS, and RNNT Checkpoints
 
-`examples/speechlm2/combine_ckpt.sh` creates a single Hugging Face-format
-checkpoint in three stages:
+`examples/speechlm2/combine_ckpt_conda.sh` creates a single Hugging Face-format
+checkpoint using a local Anaconda/Miniconda environment in three stages:
 
 1. Convert the distributed STT checkpoint to Hugging Face format.
 2. Combine STT and TTS.
@@ -152,38 +158,37 @@ Required inputs:
 - A TTS `.ckpt`.
 - An RNNT `.nemo`. Its encoder config is used during STT conversion, and its decoder/joint weights are used in the final merge.
 - A reference speaker WAV.
-- The Docker image and a saved tar archive used as a backup.
+- A conda environment with the VoiceChat dependencies installed (default name: `voicechat`).
 
 The default Hydra configuration is
 `examples/speechlm2/conf/nemotron_voicechat_nano9b.yaml`.
 
-`--docker-image-tar` specifies the backup archive. The script loads it only
-when the image named by `--docker-image` is not already available locally.
-
-Run the following command on the host. Replace the example paths, tag, and
-step with values for your checkpoints:
+Run the following command. Replace the example paths, tag, step, and conda
+settings with values for your checkpoints:
 
 ```bash
 export NEMO_DIR=/path/to/Speech
 export WORKSPACE=/path/to/checkpoint-workspace
+export STEP=<N>   # training step of the STT checkpoint (matches step-<N>.ckpt)
 
-bash "$NEMO_DIR/examples/speechlm2/combine_ckpt.sh" \
-  --stt-fsdp-ckpt "$WORKSPACE/checkpoints/stt/step-10000.ckpt" \
+bash "$NEMO_DIR/examples/speechlm2/combine_ckpt_conda.sh" \
+  --stt-fsdp-ckpt "$WORKSPACE/checkpoints/stt/step-${STEP}.ckpt" \
   --stt-ckpt-config "$WORKSPACE/checkpoints/stt/exp_config.yaml" \
   --tts-ckpt "$WORKSPACE/checkpoints/tts/tts.ckpt" \
   --rnnt-nemo "$WORKSPACE/checkpoints/rnnt/model.nemo" \
   --speaker-wav "$WORKSPACE/speaker/speaker.wav" \
   --speaker-name my_speaker \
   --output-root "$WORKSPACE/output" \
-  --docker-image-tar /path/to/voicechat-v1.0.tar \
-  --docker-image voicechat:v1.0 \
   --tag my_exp \
-  --step 10000 \
+  --step "$STEP" \
   --cache "$WORKSPACE/cache" \
   --results-root "$WORKSPACE/results" \
-  --docker-vols "-v $NEMO_DIR:$NEMO_DIR -v $WORKSPACE:$WORKSPACE" \
+  --conda-env voicechat \
   --gpu 0
 ```
+
+Override the conda install location if needed with `--conda-root` or
+`CONDA_ROOT`.
 
 The script writes intermediate and final checkpoints under:
 
@@ -191,10 +196,6 @@ The script writes intermediate and final checkpoints under:
 <output-root>/<tag>/s2s/
 <output-root>/<tag>/s2s_rnnt/
 ```
-
-Use a local wrapper outside the repository if a machine needs fixed paths.
-Keeping such a wrapper outside the Speech source tree avoids committing
-cluster-specific paths.
 
 ## Known Limitations
 

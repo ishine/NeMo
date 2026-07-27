@@ -182,7 +182,7 @@ TTS_NAME="$(basename "${TTS_CKPT}" .ckpt)"
 STT_HF_CKPT="${STT_FSDP_CKPT%.ckpt}_hf"
 HF_CKPT_NAME="${TAG}-step${STEP}-tts-eartts-${TTS_NAME}"
 HF_EXPORT_DIR="${OUTPUT_ROOT}/${TAG}/s2s/${HF_CKPT_NAME}"
-OUTPUT_DIR="${OUTPUT_ROOT}/${TAG}/s2s_rnnt/${HF_CKPT_NAME}_rnnt_cand10_preproc_enc_att0_vci50"
+OUTPUT_DIR="${OUTPUT_ROOT}/${TAG}/s2s_rnnt/${HF_CKPT_NAME}"
 
 mkdir -p "${CACHE}" "${RESULTS_ROOT}" "${OUTPUT_ROOT}"
 
