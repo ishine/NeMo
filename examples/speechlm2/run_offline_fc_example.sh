@@ -34,7 +34,6 @@ ARGS=(
   --wav "${WAV}"
   --api-response-json "${API_RESPONSE_JSON}"
   --output-dir "${OUTPUT_DIR}"
-  --code-dir "${CODE_DIR}"
 )
 [[ -n "${TEMPLATE:-}" ]] && ARGS+=(--template "${TEMPLATE}")
 [[ -n "${TOOLS_JSON:-}" ]] && ARGS+=(--tools-json "${TOOLS_JSON}")

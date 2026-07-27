@@ -69,26 +69,47 @@ Verify the install (expect: `2.10.0+cu128 True True <your GPU>`):
 python -c "import torch, torchcodec; from transformers.utils.import_utils import is_mamba_2_ssm_available as m, is_causal_conv1d_available as c; print(torch.__version__, m(), c(), torch.cuda.get_device_name(0))"
 ```
 
-#### 3. Run offline inference
+#### 3. Download the checkpoint
+
+```bash
+export CHECKPOINT="$HOME/NVIDIA-NemotronLabs-VoiceChat-12B"
+export OUTPUT_DIR="$HOME/voicechat_output"
+
+hf download nvidia/NVIDIA-NemotronLabs-VoiceChat-12B --local-dir "$CHECKPOINT"
+```
+
+#### 4. Run offline inference
 
 Activate the environment if needed (`conda activate voicechat`), then:
 
+The environment provides NeMo's dependencies via the installed `nemo_toolkit`,
+but the VoiceChat model code lives in this repository. Prepend `NEMO_DIR` to
+`PYTHONPATH` in every new shell so this source tree is used instead of an older
+installed SpeechLM package.
+
 ```bash
+export PYTHONPATH="$NEMO_DIR:${PYTHONPATH:-}"
+
 # General
 WAV="$NEMO_DIR/examples/speechlm2/sample_audio/sample_general.wav"
 
 python "$NEMO_DIR/examples/speechlm2/offline_voicechat_infer.py" \
   --checkpoint "$CHECKPOINT" --wav "$WAV" \
-  --output-dir "$OUTPUT_DIR" --code-dir "$NEMO_DIR"
+  --output-dir "$OUTPUT_DIR"
+```
 
+For function calling, `--api-response-json` supplies the tool response injected
+on the second pass. Its `tool_name` must match an available tool, and `response`
+must be ASCII-only and TTS-friendly:
+
+```bash
 # Function calling
 WAV="$NEMO_DIR/examples/speechlm2/sample_audio/sample_fc.wav"
 API_RESPONSE_JSON="$NEMO_DIR/examples/speechlm2/function_calling/random_number_response.json"
 
 python "$NEMO_DIR/examples/speechlm2/offline_voicechat_fc_infer.py" \
   --checkpoint "$CHECKPOINT" --wav "$WAV" \
-  --api-response-json "$API_RESPONSE_JSON" --output-dir "$OUTPUT_DIR" \
-  --code-dir "$NEMO_DIR"
+  --api-response-json "$API_RESPONSE_JSON" --output-dir "$OUTPUT_DIR"
 ```
 
 ### Optimized NVIDIA inference container for interactive streaming deployment

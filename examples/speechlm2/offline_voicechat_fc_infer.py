@@ -15,24 +15,33 @@
 """
 Offline Nemotron VoiceChat inference with function calling (two-pass).
 
+Requires this repository to precede any installed nemo_toolkit on PYTHONPATH:
+    export PYTHONPATH=/path/to/Speech:$PYTHONPATH
+
 Usage:
     python offline_voicechat_fc_infer.py \\
         --checkpoint /path/to/hf_checkpoint \\
         --wav /path/to/input.wav \\
         --api-response-json /path/to/random_number_response.json \\
-        --output-dir /path/to/output \\
-        --code-dir /path/to/Speech
+        --output-dir /path/to/output
 """
 
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
-import os
-import sys
+from pathlib import Path
 
-DEFAULT_TEMPLATE = os.path.join(os.path.dirname(__file__), "function_calling", "template.jinja")
+from nemo.collections.speechlm2.inference.utils.offline_voicechat import (
+    build_model,
+    encode_system_prompt,
+    load_wav_16k_mono,
+    render_fc_system_prompt,
+    run_fc_offline_inference,
+    save_fc_offline_outputs,
+)
+
+DEFAULT_TEMPLATE = Path(__file__).resolve().parent / "function_calling" / "template.jinja"
 
 DEFAULT_SYSTEM_MESSAGE = (
     "You are an AI voice assistant developed by NVIDIA. "
@@ -83,18 +92,6 @@ DEFAULT_TOOLS = [
 ]
 
 
-def _load_offline_voicechat_module(code_dir: str):
-    module_path = os.path.join(
-        code_dir,
-        "nemo/collections/speechlm2/inference/utils/offline_voicechat.py",
-    )
-    spec = importlib.util.spec_from_file_location("offline_voicechat", module_path)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules["offline_voicechat"] = mod
-    spec.loader.exec_module(mod)
-    return mod
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Offline Nemotron VoiceChat FC inference")
     parser.add_argument("--checkpoint", required=True)
@@ -109,15 +106,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tools-json", default=None, help="Tool definitions JSON (defaults to generate_random_number)")
     parser.add_argument("--system-message", default=DEFAULT_SYSTEM_MESSAGE)
     parser.add_argument("--sample-id", default="sample_fc")
-    parser.add_argument("--code-dir", default=None)
     parser.add_argument("--device", default="cuda")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    code_dir = args.code_dir or os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
-    ov = _load_offline_voicechat_module(code_dir)
 
     tools = DEFAULT_TOOLS
     if args.tools_json:
@@ -132,22 +126,21 @@ def main() -> None:
     print(f"Template   : {args.template}")
     print(f"API JSON   : {args.api_response_json}")
     print(f"Output dir : {args.output_dir}")
-    print(f"Code dir   : {code_dir}")
     print(f"API response: {api_response['tool_name']} -> {api_response['response']}")
     print()
 
     print("Building model...")
-    model = ov.build_model(args.checkpoint, code_dir, device=args.device)
+    model = build_model(args.checkpoint, device=args.device)
     print("Model ready.")
 
-    system_prompt = ov.render_fc_system_prompt(args.template, args.system_message, tools)
+    system_prompt = render_fc_system_prompt(args.template, args.system_message, tools)
     print(f"System prompt ({len(system_prompt)} chars):\n{system_prompt}\n")
 
-    wav_1d, input_signal, input_signal_lens = ov.load_wav_16k_mono(args.wav, device=args.device)
-    prompt_tokens, prompt_token_lens = ov.encode_system_prompt(model, system_prompt, device=args.device)
+    wav_1d, input_signal, input_signal_lens = load_wav_16k_mono(args.wav, device=args.device)
+    prompt_tokens, prompt_token_lens = encode_system_prompt(model, system_prompt, device=args.device)
 
     print(f"=== Pass 1: detect function call ({wav_1d.shape[0] / 16000:.2f}s audio) ===")
-    result, fc_output, call_step, response_step, resp_token_ids = ov.run_fc_offline_inference(
+    result, fc_output, call_step, response_step, resp_token_ids = run_fc_offline_inference(
         model,
         input_signal=input_signal,
         input_signal_lens=input_signal_lens,
@@ -160,7 +153,7 @@ def main() -> None:
     text = result.get("text", [""])[0]
     print(f"\n=== Generated text ===\n{text}\n")
 
-    paths = ov.save_fc_offline_outputs(
+    paths = save_fc_offline_outputs(
         result,
         wav_1d,
         args.output_dir,

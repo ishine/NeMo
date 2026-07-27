@@ -35,5 +35,4 @@ python3 "${CODE_DIR}/examples/speechlm2/offline_voicechat_infer.py" \
   --checkpoint "${CHECKPOINT}" \
   --wav "${WAV}" \
   --system-prompt "${SYSTEM_PROMPT}" \
-  --output-dir "${OUTPUT_DIR}" \
-  --code-dir "${CODE_DIR}"
+  --output-dir "${OUTPUT_DIR}"

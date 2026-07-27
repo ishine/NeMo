@@ -16,18 +16,17 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
-import sys
-import types
 from pathlib import Path
-from typing import Any, Type
-from unittest.mock import MagicMock
+from typing import Any
 
 import torch
 import torch.nn.functional as F
 import torchaudio
+from jinja2 import Environment
+
+from nemo.collections.speechlm2.models.nemotron_voicechat import NemotronVoiceChat
 
 TARGET_SR = 22050
 SOURCE_SR = 16000
@@ -50,96 +49,6 @@ def output_paths_from_wav(wav_path: str | os.PathLike, output_dir: str | os.Path
     }
 
 
-def _load_file(mod_name: str, file_path: str):
-    spec = importlib.util.spec_from_file_location(mod_name, file_path)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[mod_name] = mod
-    spec.loader.exec_module(mod)
-    return mod
-
-
-def import_nemotron_voicechat(code_dir: str) -> Type:
-    """Load NemotronVoiceChat from a Speech source tree without heavy __init__ chains."""
-    code_dir = code_dir.rstrip("/")
-    if code_dir not in sys.path:
-        sys.path.insert(0, code_dir)
-
-    for pkg_name, pkg_path in [
-        ("nemo.collections.speechlm2", f"{code_dir}/nemo/collections/speechlm2"),
-        ("nemo.collections.speechlm2.models", f"{code_dir}/nemo/collections/speechlm2/models"),
-        ("nemo.collections.speechlm2.modules", f"{code_dir}/nemo/collections/speechlm2/modules"),
-    ]:
-        pkg = types.ModuleType(pkg_name)
-        pkg.__path__ = [pkg_path]
-        pkg.__package__ = pkg_name
-        sys.modules[pkg_name] = pkg
-
-    _load_file(
-        "nemo.collections.speechlm2.data.utils",
-        f"{code_dir}/nemo/collections/speechlm2/data/utils.py",
-    )
-    _load_file(
-        "nemo.collections.speechlm2.parts.precision",
-        f"{code_dir}/nemo/collections/speechlm2/parts/precision.py",
-    )
-    perception = _load_file(
-        "nemo.collections.speechlm2.modules.perception",
-        f"{code_dir}/nemo/collections/speechlm2/modules/perception.py",
-    )
-    speech_gen = _load_file(
-        "nemo.collections.speechlm2.modules.speech_generation",
-        f"{code_dir}/nemo/collections/speechlm2/modules/speech_generation.py",
-    )
-    modules_pkg = sys.modules["nemo.collections.speechlm2.modules"]
-    modules_pkg.AudioPerceptionModule = perception.AudioPerceptionModule
-    modules_pkg.TransformerARSpeechDecoder = speech_gen.TransformerARSpeechDecoder
-
-    _load_file(
-        "nemo.collections.speechlm2.parts.hf_hub",
-        f"{code_dir}/nemo/collections/speechlm2/parts/hf_hub.py",
-    )
-    _load_file(
-        "nemo.collections.speechlm2.parts.pretrained",
-        f"{code_dir}/nemo/collections/speechlm2/parts/pretrained.py",
-    )
-    _load_file(
-        "nemo.collections.speechlm2.parts.optim_setup",
-        f"{code_dir}/nemo/collections/speechlm2/parts/optim_setup.py",
-    )
-
-    for mod_name in [
-        "nemo.collections.speechlm2.parts.metrics",
-        "nemo.collections.speechlm2.parts.metrics.asr_bleu",
-        "nemo.collections.speechlm2.parts.metrics.asr_cer_wer",
-        "nemo.collections.speechlm2.parts.metrics.bleu",
-        "nemo.collections.speechlm2.parts.metrics.empty_text",
-        "nemo.collections.speechlm2.parts.metrics.results_logger",
-        "nemo.collections.speechlm2.parts.metrics.secs",
-        "nemo.collections.speechlm2.parts.metrics.text_wer",
-        "nemo.collections.speechlm2.parts.metrics.token_accuracy",
-        "nemo.collections.speechlm2.parts.lora",
-    ]:
-        sys.modules[mod_name] = MagicMock()
-
-    _load_file(
-        "nemo.collections.speechlm2.models.duplex_s2s_model",
-        f"{code_dir}/nemo/collections/speechlm2/models/duplex_s2s_model.py",
-    )
-    _load_file(
-        "nemo.collections.speechlm2.models.duplex_stt_model",
-        f"{code_dir}/nemo/collections/speechlm2/models/duplex_stt_model.py",
-    )
-    _load_file(
-        "nemo.collections.speechlm2.models.duplex_ear_tts",
-        f"{code_dir}/nemo/collections/speechlm2/models/duplex_ear_tts.py",
-    )
-    nemotron_mod = _load_file(
-        "nemo.collections.speechlm2.models.nemotron_voicechat",
-        f"{code_dir}/nemo/collections/speechlm2/models/nemotron_voicechat.py",
-    )
-    return nemotron_mod.NemotronVoiceChat
-
-
 def load_hf_config(ckpt_dir: str, speaker_name: str = "Aria") -> dict[str, Any]:
     """Load config.json from an HF-format checkpoint and apply inference overrides."""
     with open(os.path.join(ckpt_dir, "config.json")) as f:
@@ -153,9 +62,8 @@ def load_hf_config(ckpt_dir: str, speaker_name: str = "Aria") -> dict[str, Any]:
     return cfg
 
 
-def build_model(ckpt_dir: str, code_dir: str, device: str | torch.device = "cuda"):
+def build_model(ckpt_dir: str, device: str | torch.device = "cuda"):
     """Build NemotronVoiceChat from an HF checkpoint directory."""
-    NemotronVoiceChat = import_nemotron_voicechat(code_dir)
     model = NemotronVoiceChat(load_hf_config(ckpt_dir))
     return model.to(device).eval()
 
@@ -254,8 +162,6 @@ SAMPLES_PER_FRAME = int(0.08 * TARGET_SR)
 
 
 def render_fc_system_prompt(template_path: str, system_message: str, tools: list[dict]) -> str:
-    from jinja2 import Environment
-
     with open(template_path) as f:
         template = Environment().from_string(f.read())
     return template.render(system_message=system_message, tools=tools)
