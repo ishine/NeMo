@@ -29,7 +29,7 @@ s2s:
   model_path: ???
   llm_checkpoint_path: ???
   speaker_reference: ???
-  engine_type: ??? # Engine type: 'native' or 'vllm_llm' or 'vllm_eartts' or 'vllm_llm_vllm_eartts'
+  engine_type: vllm_llm_vllm_eartts # Engine type: 'native' or 'vllm_llm' or 'vllm_eartts' or 'vllm_llm_vllm_eartts'
   vllm_llm_config:
     model_path: ${s2s.model_path}             # Inherits from s2s.model_path
     max_model_len: 6144                       # Single-GPU default (STT already resident shrinks TTS KV budget)
@@ -60,7 +60,7 @@ s2s:
   # ========================
   # Inference settings
   # ========================
-  codec_token_history_size: 60                # Sliding-window buffer size; ignored when use_codec_cache is true
+  codec_token_history_size: 30                # Sliding-window buffer size; ignored when use_codec_cache is true
   use_perception_cache: true                  # Enable cache-aware streaming for perception encoder
   use_perception_cudagraph: true              # Enable CUDA graph-accelerated perception encoder
   pad_and_drop_preencoded: false              # When true, first chunk uses subsequent-chunk sizes (zero-padded)
@@ -75,7 +75,7 @@ s2s:
 
   # sampling parameters. greedy decoding: temperature=0 (argmax), top_p=1.0.
   top_p: 1.0
-  repetition_penalty: 1.2
+  repetition_penalty: 1.0
   temperature: 0.0
   force_turn_taking: true
   force_turn_taking_threshold: 40
@@ -83,6 +83,7 @@ s2s:
   turn_taking_source: rnnt              # "rnnt" (default) or "asr_head"
   rnnt_eou_frames: 40                   # RNNT silence frames for EOU (40 × 80ms = 3.2s)
   rnnt_bou_frames: 40                   # RNNT speech frames for BOU / barge-in (40 × 80ms = 3.2s)
+  rnnt_fc_interrupt_ms: 3200            # ms of speech to interrupt FC async
   force_turn_taking_pad_window_first_turn: 10  # PAD-window for forced BOS on the very first user turn
   asr_eou_first_turn: 40               # EOU silence threshold for first user turn (matches rnnt_eou_frames)
   asr_min_speech_frames_first_turn: 2  # Min speech frames before EOU is armed on first turn
@@ -112,17 +113,21 @@ s2s:
                                        # Requires a checkpoint trained with individual TTS prompts
 
   # FC async mode: run text tokens at full LLM speed during tool calls
-  fc_async_enabled: false
+  fc_async_enabled: true
   # Two-phase: Phase 1 generates call tokens, pauses at EOTC for tool execution,
   # then Phase 2 injects response tokens. Requires fc_async_enabled.
-  fc_async_two_phase: false
+  fc_async_two_phase: true
+  # When false (default), FC async uses silence embeddings instead of frozen real audio.
+  fc_async_use_real_audio: false
+  # Convert numeric tool-response values to spoken text before injection.
+  fc_convert_num_to_text: true
   # Enable built-in tool executor (e.g. calculate_bmi) for two-phase FC.
   # When false, Phase 2 skips tool execution (pre-provided tool_response_text still works).
-  enable_builtin_tools: false
+  enable_builtin_tools: true
   # Random ACK phrase played at start of tool call (e.g. "Sure, give me just a moment.")
-  fc_random_ack_enabled: false
+  fc_random_ack_enabled: true
   # Reminder phrase played between Phase 1 EOTC and tool API return (fills silence gap for slow APIs)
-  tool_reminder_enabled: false
+  tool_reminder_enabled: true
   # Per-tool on-hold messages (JSON: {tool_name: phrase}); null = disabled
   fc_on_hold_messages_path: null
   # Generic on-hold messages list (JSON array); up to 2 played with 1s gap if API still blocked
@@ -135,8 +140,8 @@ s2s:
 
   # TTS hallucination prevention (Edresson's fix): force EOS after ratio × text_token_count frames.
   # Prevents TTS from hallucinating when </s> is missing or delayed after long silence.
-  # 0.0 = disabled. Default 6.0 (TTS needs ~6 frames per text token on average).
-  tts_text_token_ratio_cap: 8.0
+  # 0.0 = disabled. Default 16.0 (~2.7× empirical TTS rate headroom at 80ms/frame).
+  tts_text_token_ratio_cap: 16.0
   # Minimum text tokens in turn before ratio cap activates (avoids false triggers on short responses).
   tts_text_token_min: 5
 
@@ -164,7 +169,7 @@ streaming:
   output_sample_rate: 22050                          # Audio sample rate in Hz
   batch_size: 1                               # Number of audio frames per batch
   att_context_size: [70,0]                    # Attention context size: [70,13],[70,6],[70,2],[70,0]
-  chunk_size_in_secs: ???                    # Needs to be multiple of 80ms
-  buffer_size_in_secs: ???                    # Audio buffer size in seconds (larger = more context, better quality)
+  chunk_size_in_secs: 0.16                   # Needs to be multiple of 80ms (0.16s = 2 frames)
+  buffer_size_in_secs: 2.0                    # Audio buffer size in seconds (larger = more context, better quality)
   request_type: frame                         # Type of request: frame, only frame is supported for cache-aware streaming
   max_len: 6144                               # Single-GPU default; use 8192 on 2-GPU setups

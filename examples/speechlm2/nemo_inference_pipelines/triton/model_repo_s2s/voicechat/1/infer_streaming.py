@@ -47,7 +47,7 @@ class TritonPythonModel:
             s2s.llm_checkpoint_path    -> S2S_LLM_CHECKPOINT_PATH (required)
             s2s.speaker_reference      -> S2S_SPEAKER_REFERENCE (optional if speaker_name set)
             s2s.speaker_name           -> S2S_SPEAKER_NAME (optional; use pre-baked latent from ckpt)
-            s2s.engine_type            -> S2S_ENGINE_TYPE (default: native)
+            s2s.engine_type            -> S2S_ENGINE_TYPE (default: vllm_llm_vllm_eartts)
             s2s.system_prompt          -> S2S_SYSTEM_PROMPT (default: none)
             s2s.tts_system_prompt      -> S2S_TTS_SYSTEM_PROMPT (default: none)
             s2s.use_codec_cache        -> S2S_USE_CODEC_CACHE (default: true)
@@ -58,8 +58,8 @@ class TritonPythonModel:
             s2s.vllm_tts_config.gpu_memory_utilization -> S2S_VLLM_TTS_GPU_MEMORY_UTILIZATION (default: 0.18)
             s2s.vllm_llm_config.max_model_len -> S2S_VLLM_MAX_MODEL_LEN (default: 6144)
             streaming.max_len              -> S2S_MAX_LEN (default: 6144)
-            streaming.chunk_size_in_secs -> S2S_CHUNK_SIZE_IN_SECS (default: 0.08)
-            streaming.buffer_size_in_secs -> S2S_BUFFER_SIZE_IN_SECS (default: 5.6)
+            streaming.chunk_size_in_secs -> S2S_CHUNK_SIZE_IN_SECS (default: 0.16)
+            streaming.buffer_size_in_secs -> S2S_BUFFER_SIZE_IN_SECS (default: 2.0)
         """
         env_overrides = {
             # Required
@@ -67,35 +67,38 @@ class TritonPythonModel:
             "s2s.llm_checkpoint_path":    ("S2S_LLM_CHECKPOINT_PATH", None),
             "s2s.speaker_reference":      ("S2S_SPEAKER_REFERENCE", None),
             "s2s.speaker_name":           ("S2S_SPEAKER_NAME", None),
-            # Optional (with defaults)
-            "s2s.engine_type":            ("S2S_ENGINE_TYPE", "native"),
+            # Optional (with defaults) — aligned with run_s2s_triton_server_rc1_vtrinh_oss.sh
+            "s2s.engine_type":            ("S2S_ENGINE_TYPE", "vllm_llm_vllm_eartts"),
             "s2s.system_prompt":          ("S2S_SYSTEM_PROMPT", None),
             "s2s.tts_system_prompt":      ("S2S_TTS_SYSTEM_PROMPT", None),
             "s2s.use_codec_cache":        ("S2S_USE_CODEC_CACHE", True),
-            "s2s.fc_async_enabled":         ("S2S_FC_ASYNC_ENABLED", False),
-            "s2s.fc_async_two_phase":       ("S2S_FC_ASYNC_TWO_PHASE", False),
+            "s2s.codec_token_history_size": ("S2S_CODEC_TOKEN_HISTORY_SIZE", 30),
+            "s2s.fc_async_enabled":         ("S2S_FC_ASYNC_ENABLED", True),
+            "s2s.fc_async_two_phase":       ("S2S_FC_ASYNC_TWO_PHASE", True),
             "s2s.fc_async_use_real_audio":  ("S2S_FC_ASYNC_USE_REAL_AUDIO", False),
             "s2s.fc_convert_num_to_text":   ("S2S_FC_CONVERT_NUM_TO_TEXT", True),
-            "s2s.enable_builtin_tools":   ("S2S_ENABLE_BUILTIN_TOOLS", False),
-            "s2s.force_turn_taking":             ("S2S_FORCE_TURN_TAKING", False),
+            "s2s.enable_builtin_tools":   ("S2S_ENABLE_BUILTIN_TOOLS", True),
+            "s2s.force_turn_taking":             ("S2S_FORCE_TURN_TAKING", True),
             "s2s.force_turn_taking_pad_window":  ("S2S_FORCE_TURN_TAKING_PAD_WINDOW", 38),
             "s2s.force_turn_taking_threshold":   ("S2S_FORCE_TURN_TAKING_THRESHOLD", 40),
             "s2s.turn_taking_source":            ("S2S_TURN_TAKING_SOURCE", "rnnt"),
             "s2s.rnnt_eou_frames":               ("S2S_RNNT_EOU_FRAMES", 40),   # blank frames → EOU (40×80ms=3.2s)
             "s2s.rnnt_bou_frames":               ("S2S_RNNT_BOU_FRAMES", 40),   # speech frames → BOU/barge-in (40×80ms=3.2s)
-            "s2s.rnnt_fc_interrupt_ms":          ("S2S_RNNT_FC_INTERRUPT_MS", 240),  # ms of speech to interrupt FC async
+            "s2s.rnnt_fc_interrupt_ms":          ("S2S_RNNT_FC_INTERRUPT_MS", 3200),  # ms of speech to interrupt FC async
             "s2s.use_separate_rnnt_ckpt":        ("S2S_USE_SEPARATE_RNNT_CKPT", False),  # True→use real .nemo RNNT, False→use combined ckpt fake RNNT
             "s2s.force_turn_taking_pad_window_first_turn": ("S2S_FORCE_TURN_TAKING_PAD_WINDOW_FIRST_TURN", 10),
             "s2s.system_prompt_repeat_n":        ("S2S_SYSTEM_PROMPT_REPEAT_N", 1),
-            "s2s.fc_random_ack_enabled":         ("S2S_FC_RANDOM_ACK_ENABLED", False),
-            "s2s.tool_reminder_enabled":         ("S2S_TOOL_REMINDER_ENABLED", False),
+            "s2s.fc_random_ack_enabled":         ("S2S_FC_RANDOM_ACK_ENABLED", True),
+            "s2s.tool_reminder_enabled":         ("S2S_TOOL_REMINDER_ENABLED", True),
             "s2s.fc_on_hold_messages_path":      ("S2S_FC_ON_HOLD_MESSAGES_PATH", None),
             "s2s.fc_generic_on_hold_messages_path": ("S2S_FC_GENERIC_ON_HOLD_MESSAGES_PATH", None),
             "s2s.fc_tool_timeout_sec":           ("S2S_FC_TOOL_TIMEOUT_SEC", 15.0),
-            "s2s.repetition_penalty":            ("S2S_REPETITION_PENALTY", 1.2),
+            "s2s.repetition_penalty":            ("S2S_REPETITION_PENALTY", 1.0),
             "s2s.temperature":                   ("S2S_TEMPERATURE", 0.0),
             "s2s.top_p":                         ("S2S_TOP_P", 1.0),
             "s2s.inference_bos_boost":           ("S2S_INFERENCE_BOS_BOOST", 0.0),
+            "s2s.tts_text_token_ratio_cap":      ("S2S_TTS_TEXT_TOKEN_RATIO_CAP", 16.0),
+            "s2s.tts_text_token_min":            ("S2S_TTS_TEXT_TOKEN_MIN", 5),
             "s2s.device_id":                          ("S2S_DEVICE_ID", 0),
             "s2s.vllm_llm_config.device_id":          ("S2S_VLLM_LLM_DEVICE_ID", 0),
             "s2s.vllm_tts_config.device_id":          ("S2S_VLLM_TTS_DEVICE_ID", 0),
@@ -103,7 +106,7 @@ class TritonPythonModel:
             "s2s.vllm_tts_config.gpu_memory_utilization": ("S2S_VLLM_TTS_GPU_MEMORY_UTILIZATION", 0.18),
             "s2s.vllm_llm_config.max_model_len":      ("S2S_VLLM_MAX_MODEL_LEN", 6144),
             "streaming.max_len":                      ("S2S_MAX_LEN", 6144),
-            "streaming.chunk_size_in_secs": ("S2S_CHUNK_SIZE_IN_SECS", 0.24),
+            "streaming.chunk_size_in_secs": ("S2S_CHUNK_SIZE_IN_SECS", 0.16),
             "streaming.buffer_size_in_secs": ("S2S_BUFFER_SIZE_IN_SECS", 2.0),
         }
         for cfg_key, (env_var, default) in env_overrides.items():
