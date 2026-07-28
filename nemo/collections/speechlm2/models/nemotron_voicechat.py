@@ -273,7 +273,7 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
                     checkpoint_path = f"{tmpdir}/model_weights.ckpt"
                     checkpoint_state = torch.load(checkpoint_path, map_location='cpu')
             else:
-                checkpoint_state = torch.load(checkpoint_path, weights_only=False, map_location='cpu')['state_dict']
+                checkpoint_state = torch.load(checkpoint_path, map_location='cpu')['state_dict']
 
             # partial initialization support
             checkpoint_state = set_model_dict_for_partial_init(checkpoint_state, self.state_dict())

@@ -119,6 +119,24 @@ else
 fi
 
 echo ""
+echo "=== Step B1 pre-processing: convert TTS .ckpt to safetensors ==="
+TTS_SAFETENSORS="${TTS_CKPT%.ckpt}.safetensors"
+if [[ ! -f "${TTS_SAFETENSORS}" ]]; then
+    python - "${TTS_CKPT}" "${TTS_SAFETENSORS}" <<'PY'
+import sys, torch
+from safetensors.torch import save_file
+src, dst = sys.argv[1], sys.argv[2]
+print(f"Converting {src} -> {dst}")
+ckpt = torch.load(src, map_location="cpu")
+save_file(ckpt["state_dict"], dst)
+print("Done.")
+PY
+else
+    echo "Safetensors already exists: ${TTS_SAFETENSORS}"
+fi
+TTS_CKPT="${TTS_SAFETENSORS}"
+
+echo ""
 echo "=== Step B1: STT HF + TTS -> S2S HF ==="
 HF_CKPT_BASENAME="$(basename "${HF_EXPORT_DIR}")"
 RESULTS_DIR="${RESULTS_ROOT}/${HF_CKPT_BASENAME}"
