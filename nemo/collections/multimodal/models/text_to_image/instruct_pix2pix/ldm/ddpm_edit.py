@@ -49,7 +49,7 @@ class LatentDiffusionEdit(LatentDiffusion):
         load_unet=True,
         load_encoder=True,
     ):
-        pl_sd = torch.load(path, map_location="cpu", weights_only=False)
+        pl_sd = torch.load(path, map_location="cpu")
         if "state_dict" in list(pl_sd.keys()):
             pl_sd = pl_sd["state_dict"]
         sd = {}
