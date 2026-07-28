@@ -404,7 +404,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 checkpoint_state = pretrained_model.state_dict()
                 del pretrained_model
             else:
-                checkpoint_state = torch.load(checkpoint_path, weights_only=False, map_location='cpu')['state_dict']
+                checkpoint_state = torch.load(checkpoint_path, map_location='cpu')['state_dict']
 
             checkpoint_state = {
                 k.replace("perception.", ""): v for k, v in checkpoint_state.items() if "perception." in k
@@ -425,7 +425,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 checkpoint_state = pretrained_model.state_dict()
                 del pretrained_model
             else:
-                checkpoint_state = torch.load(checkpoint_path, weights_only=False, map_location='cpu')['state_dict']
+                checkpoint_state = torch.load(checkpoint_path, map_location='cpu')['state_dict']
 
             checkpoint_state = set_model_dict_for_partial_init(checkpoint_state, self.state_dict())
             self.load_state_dict(checkpoint_state, strict=True)
