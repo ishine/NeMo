@@ -67,7 +67,6 @@ class TritonPythonModel:
             "s2s.llm_checkpoint_path":    ("S2S_LLM_CHECKPOINT_PATH", None),
             "s2s.speaker_reference":      ("S2S_SPEAKER_REFERENCE", None),
             "s2s.speaker_name":           ("S2S_SPEAKER_NAME", None),
-            # Optional (with defaults) — aligned with run_s2s_triton_server_rc1_vtrinh_oss.sh
             "s2s.engine_type":            ("S2S_ENGINE_TYPE", "vllm_llm_vllm_eartts"),
             "s2s.system_prompt":          ("S2S_SYSTEM_PROMPT", None),
             "s2s.tts_system_prompt":      ("S2S_TTS_SYSTEM_PROMPT", None),

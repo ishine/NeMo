@@ -14,7 +14,7 @@ The model operates on audio signals, which are encoded using a fast conformer mo
 
 This guide explains how to test the NVIDIA Nemotron Labs VoiceChat model using either of the following approaches:
 
-- Load the [Hugging Face (HF) checkpoint](https://huggingface.co/nvidia/NVIDIA-NemotronLabs-VoiceChat-12B) for quick, non-interactive testing with offline batch inference using an Anaconda environment.
+- Load the [Hugging Face (HF) checkpoint](https://huggingface.co/nvidia/NVIDIA-NemotronLabs-VoiceChat-12B) for quick, non-interactive testing with offline batch inference using a conda environment.
 - Use an optimized NVIDIA inference container for interactive audio testing with the same HF checkpoint.
 
 The available code can also be used for training. The resulting checkpoint can then be converted and used for inference as described above. Details on how to perform this conversion are provided in [Combine STT, TTS, and RNNT Checkpoints](#combine-stt-tts-and-rnnt-checkpoints).
@@ -22,7 +22,7 @@ The available code can also be used for training. The resulting checkpoint can t
 ### Offline Evaluation (HF Checkpoint)
 
 Run offline speech-to-speech inference from a Hugging Face-format checkpoint.
-This requires an NVIDIA GPU, Anaconda/Miniconda, and the Speech source tree.
+This requires an NVIDIA GPU, a conda environment, and the Speech source tree.
 
 #### 1. Clone the Speech repository
 
@@ -39,7 +39,7 @@ git switch nemotron-labs-voicechat
 export NEMO_DIR="$(pwd)"
 ```
 
-#### 2. Create the Anaconda environment (once per machine)
+#### 2. Create the conda environment (once per machine)
 
 ```bash
 conda create -y -n voicechat python=3.12
@@ -175,7 +175,7 @@ Based on the tool responses, you can call additional tools if needed, correct to
 ## Combine STT, TTS, and RNNT Checkpoints
 
 `examples/speechlm2/combine_ckpt_conda.sh` creates a single Hugging Face-format
-checkpoint using a local Anaconda/Miniconda environment in three stages:
+checkpoint using a local conda environment in three stages:
 
 1. Convert the distributed STT checkpoint to Hugging Face format.
 2. Combine STT and TTS.
@@ -187,15 +187,18 @@ Required inputs:
 - A TTS `.ckpt`.
 - An RNNT `.nemo`. Its encoder config is used during STT conversion, and its decoder/joint weights are used in the final merge.
 - A reference speaker WAV.
-- A conda environment with the VoiceChat dependencies installed (default name: `voicechat`).
+- A conda environment with the VoiceChat dependencies installed (see
+  [Create the conda environment](#2-create-the-conda-environment-once-per-machine)).
 
 The default Hydra configuration is
 `examples/speechlm2/conf/nemotron_voicechat_nano9b.yaml`.
 
-Run the following command. Replace the example paths, tag, step, and conda
-settings with values for your checkpoints:
+Activate your conda environment first, then run the following command.
+Replace the example paths, tag, and step with values for your checkpoints:
 
 ```bash
+conda activate voicechat
+
 export NEMO_DIR=/path/to/Speech
 export WORKSPACE=/path/to/checkpoint-workspace
 export STEP=<N>   # training step of the STT checkpoint (matches step-<N>.ckpt)
@@ -212,12 +215,8 @@ bash "$NEMO_DIR/examples/speechlm2/combine_ckpt_conda.sh" \
   --step "$STEP" \
   --cache "$WORKSPACE/cache" \
   --results-root "$WORKSPACE/results" \
-  --conda-env voicechat \
   --gpu 0
 ```
-
-Override the conda install location if needed with `--conda-root` or
-`CONDA_ROOT`.
 
 The script writes intermediate and final checkpoints under:
 

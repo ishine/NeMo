@@ -143,24 +143,25 @@ class TritonPythonModel:
           * model_version: Model version
           * model_name: Model name
         """
-        # Set up file logging so inference logs are saved to demo_record/.
+        # Set up optional file logging when S2S_INFERENCE_LOG_DIR is set.
         # NeMo uses a named logger "nemo_logger" with propagate=False, so we
         # must add the handler directly to that logger rather than to root.
         import logging as _stdlib_logging
         import datetime
-        _log_dir = "/home/vtrinh/projects/elena_niva_inference/demo_record"
-        os.makedirs(_log_dir, exist_ok=True)
-        _ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        _log_path = os.path.join(_log_dir, f"duplex_demo_server_audio_{_ts}_text_outputs.log")
-        _file_handler = _stdlib_logging.FileHandler(_log_path)
-        _file_handler.setLevel(_stdlib_logging.DEBUG)
-        _file_handler.setFormatter(_stdlib_logging.Formatter(
-            "[%(asctime)s %(levelname)s %(filename)s:%(lineno)d] %(message)s"
-        ))
-        # logging is nemo.utils.logging (a Logger singleton); ._logger is the
-        # underlying stdlib Logger instance ("nemo_logger").
-        logging._logger.addHandler(_file_handler)
-        logging.info(f"Inference logs will be saved to: {_log_path}")
+        _log_dir = os.environ.get("S2S_INFERENCE_LOG_DIR")
+        if _log_dir:
+            os.makedirs(_log_dir, exist_ok=True)
+            _ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            _log_path = os.path.join(_log_dir, f"duplex_demo_server_audio_{_ts}_text_outputs.log")
+            _file_handler = _stdlib_logging.FileHandler(_log_path)
+            _file_handler.setLevel(_stdlib_logging.DEBUG)
+            _file_handler.setFormatter(_stdlib_logging.Formatter(
+                "[%(asctime)s %(levelname)s %(filename)s:%(lineno)d] %(message)s"
+            ))
+            # logging is nemo.utils.logging (a Logger singleton); ._logger is the
+            # underlying stdlib Logger instance ("nemo_logger").
+            logging._logger.addHandler(_file_handler)
+            logging.info(f"Inference logs will be saved to: {_log_path}")
 
         # Config path: set S2S_TRITON_CONFIG_PATH env var (start_triton.sh does this automatically).
         config_path = os.environ.get("S2S_TRITON_CONFIG_PATH")

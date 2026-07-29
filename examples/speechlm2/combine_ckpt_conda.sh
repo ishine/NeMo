@@ -1,11 +1,11 @@
 #!/bin/bash
 # Combine STT + TTS + RNNT using a local conda environment (no Docker).
+# Activate your VoiceChat conda env before running this script
+# (see README: Create the conda environment).
 
 set -euo pipefail
 
 NEMO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-CONDA_ROOT="${CONDA_ROOT:-/home/vtrinh/miniconda3}"
-CONDA_ENV="${CONDA_ENV:-voicechat}"
 SPK_NAME=Aria
 SEED=42
 CONFIG_NAME=nemotron_voicechat_nano9b
@@ -27,8 +27,6 @@ while [[ $# -gt 0 ]]; do
     --cache) CACHE="$2"; shift 2 ;;
     --results-root) RESULTS_ROOT="$2"; shift 2 ;;
     --gpu) GPU="$2"; shift 2 ;;
-    --conda-root) CONDA_ROOT="$2"; shift 2 ;;
-    --conda-env) CONDA_ENV="$2"; shift 2 ;;
     --config-name) CONFIG_NAME="$2"; shift 2 ;;
     --seed) SEED="$2"; shift 2 ;;
     *) echo "ERROR: unknown argument: $1" >&2; exit 1 ;;
@@ -42,8 +40,11 @@ for path in "$STT_FSDP_CKPT" "$STT_CKPT_CONFIG" "$TTS_CKPT" "$RNNT_NEMO" "$SPK_W
   [[ -e "$path" ]] || { echo "ERROR: path does not exist: $path" >&2; exit 1; }
 done
 
-source "${CONDA_ROOT}/etc/profile.d/conda.sh"
-conda activate "${CONDA_ENV}"
+command -v python >/dev/null || {
+  echo "ERROR: python not found. Activate your VoiceChat conda env first" \
+       "(see README: Create the conda environment)." >&2
+  exit 1
+}
 
 CACHE="${CACHE:-${OUTPUT_ROOT}/cache}"
 RESULTS_ROOT="${RESULTS_ROOT:-${OUTPUT_ROOT}/combined_ckpt_result_dir}"
@@ -94,7 +95,6 @@ destination.write_text("".join(lines))
 PY
 
 echo "============================================================"
-echo " Conda      : ${CONDA_ENV}"
 echo " Python     : $(command -v python)"
 echo " GPU        : CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
 echo " FSDP ckpt  : ${STT_FSDP_CKPT}"
