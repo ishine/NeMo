@@ -4,7 +4,8 @@
 > [Nemotron Labs VoiceChat model](https://huggingface.co/nvidia/NVIDIA-NemotronLabs-VoiceChat-11B)
 > on Hugging Face.
 >
-> This project is currently not accepting contributions.
+> This project is currently not accepting contributions on the
+> `nemotron-labs-voicechat` branch.
 
 ## Introduction
 
@@ -234,6 +235,12 @@ The script writes intermediate and final checkpoints under:
 <output-root>/<tag>/s2s/
 <output-root>/<tag>/s2s_rnnt/
 ```
+
+## License
+
+The NeMo codebase in this repository is licensed under the [Apache License 2.0](LICENSE).
+The Nemotron Labs VoiceChat model and corresponding inference container are licensed under
+[OpenMDW 1.1](LICENSE_OpenMDW-1.1).
 
 ## Known Limitations
 
