@@ -3,6 +3,8 @@
 > and instructions for the
 > [Nemotron Labs VoiceChat model](https://huggingface.co/nvidia/NVIDIA-NemotronLabs-VoiceChat-11B)
 > on Hugging Face.
+>
+> This project is currently not accepting contributions.
 
 ## Introduction
 
