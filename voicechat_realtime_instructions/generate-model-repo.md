@@ -45,3 +45,8 @@ docker run -it --rm --name=nemotron-voicechat \
   --entrypoint /s2s/run_s2s_server.sh \
   nvcr.io/nvidia/nemotron-voicechat:latest
 ```
+
+---
+For a full description of the WebSocket protocol, client and server events, and audio format details, see the API reference.
+
+Next: [API Reference](api-reference.md)

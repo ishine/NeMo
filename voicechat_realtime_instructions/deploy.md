@@ -294,3 +294,8 @@ python3 nemotron-voicechat-client.py --server localhost:9000 \
 - Watch logs with `docker logs -f <container>`.
 - Poll `curl http://localhost:9000/v1/health/ready` until it returns `ready`.
 - Ensure `--shm-size=8GB` is set on the `docker run` command.
+
+---
+If you have a HuggingFace or custom NeMo checkpoint and want to use it instead of the downloaded model, generate a Triton model repository and mount it directly.
+
+Next: [Generate Model Repository](generate-model-repo.md)
