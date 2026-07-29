@@ -40,12 +40,6 @@ for path in "$STT_FSDP_CKPT" "$STT_CKPT_CONFIG" "$TTS_CKPT" "$RNNT_NEMO" "$SPK_W
   [[ -e "$path" ]] || { echo "ERROR: path does not exist: $path" >&2; exit 1; }
 done
 
-command -v python >/dev/null || {
-  echo "ERROR: python not found. Activate your VoiceChat conda env first" \
-       "(see README: Create the conda environment)." >&2
-  exit 1
-}
-
 CACHE="${CACHE:-${OUTPUT_ROOT}/cache}"
 RESULTS_ROOT="${RESULTS_ROOT:-${OUTPUT_ROOT}/combined_ckpt_result_dir}"
 MERGE_CONFIG_PATH="${NEMO_DIR}/examples/speechlm2/conf"
@@ -56,6 +50,21 @@ export HF_HOME="${CACHE}" TORCH_HOME="${CACHE}" NEMO_CACHE_DIR="${CACHE}"
 export TOKENIZERS_PARALLELISM=false OMP_NUM_THREADS=1
 export LOCAL_RANK=0 RANK=0 WORLD_SIZE=1 MASTER_ADDR=localhost
 export WANDB_MODE=offline
+
+# Preflight: one import that exercises both halves of the environment. It needs
+# the conda dependencies (torch, lhotse, ...) and it needs NEMO_DIR ahead of the
+# installed nemo_toolkit on PYTHONPATH, because DuplexSTTModel exists only in
+# this source tree. Step A would otherwise fail on the same import minutes later.
+if ! PREFLIGHT="$(python -c 'from nemo.collections.speechlm2.models import DuplexSTTModel' 2>&1)"; then
+  echo "${PREFLIGHT}" >&2
+  echo "" >&2
+  echo "ERROR: cannot import DuplexSTTModel (see above)." >&2
+  echo "  \"No module named 'torch'\": activate your VoiceChat conda env" >&2
+  echo "      (see README: Create the conda environment)." >&2
+  echo "  \"cannot import name 'DuplexSTTModel'\": ${NEMO_DIR}" >&2
+  echo "      is not a checkout of the nemotron-labs-voicechat branch." >&2
+  exit 1
+fi
 
 TTS_NAME="$(basename "${TTS_CKPT}" .ckpt)"
 STT_HF_CKPT="${STT_FSDP_CKPT%.ckpt}_hf"

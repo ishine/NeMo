@@ -1,4 +1,8 @@
-> **Note:** This branch provides resources for working with the [Nemotron Labs VoiceChat model on Hugging Face](https://huggingface.co/nvidia/NVIDIA-NemotronLabs-VoiceChat-12B).
+> **Note:** This is the `nemotron-labs-voicechat` branch of
+> [`NVIDIA-NeMo/Speech`](https://github.com/NVIDIA-NeMo/Speech), holding the code
+> and instructions for the
+> [Nemotron Labs VoiceChat model](https://huggingface.co/nvidia/NVIDIA-NemotronLabs-VoiceChat-12B)
+> on Hugging Face.
 
 ## Introduction
 
@@ -39,7 +43,9 @@ git switch nemotron-labs-voicechat
 export NEMO_DIR="$(pwd)"
 ```
 
-#### 2. Create the conda environment (once per machine)
+#### 2. Create the conda environment
+
+This is one-time setup; later shells only need `conda activate voicechat`.
 
 ```bash
 conda create -y -n voicechat python=3.12
@@ -72,30 +78,32 @@ python -c "import torch, torchcodec; from transformers.utils.import_utils import
 #### 3. Download the checkpoint
 
 ```bash
-export CHECKPOINT="$HOME/NVIDIA-NemotronLabs-VoiceChat-12B"
-export OUTPUT_DIR="$HOME/voicechat_output"
-
-hf download nvidia/NVIDIA-NemotronLabs-VoiceChat-12B --local-dir "$CHECKPOINT"
+hf download nvidia/NVIDIA-NemotronLabs-VoiceChat-12B \
+  --local-dir /path/to/checkpoint
 ```
 
 #### 4. Run offline inference
 
-Activate the environment if needed (`conda activate voicechat`), then:
-
-The environment provides NeMo's dependencies via the installed `nemo_toolkit`,
-but the VoiceChat model code lives in this repository. Prepend `NEMO_DIR` to
-`PYTHONPATH` in every new shell so this source tree is used instead of an older
-installed SpeechLM package.
+Between `nemo_toolkit==2.6.2` and the extra packages installed alongside it, the
+conda environment from step 2 provides every dependency this branch needs. What
+it does not provide is the VoiceChat model code, which lives in this repository.
+Prepending `NEMO_DIR` to `PYTHONPATH` makes Python import that code from this
+branch instead of the older `speechlm2` collection bundled with that release. Run
+both lines in every new shell:
 
 ```bash
+conda activate voicechat
 export PYTHONPATH="$NEMO_DIR:${PYTHONPATH:-}"
+```
 
+Then run:
+
+```bash
 # General
-WAV="$NEMO_DIR/examples/speechlm2/sample_audio/sample_general.wav"
-
 python "$NEMO_DIR/examples/speechlm2/offline_voicechat_infer.py" \
-  --checkpoint "$CHECKPOINT" --wav "$WAV" \
-  --output-dir "$OUTPUT_DIR"
+  --checkpoint /path/to/checkpoint \
+  --wav "$NEMO_DIR/examples/speechlm2/sample_audio/sample_general.wav" \
+  --output-dir /path/to/output
 ```
 
 For function calling, `--api-response-json` supplies the tool response injected
@@ -104,12 +112,11 @@ must be ASCII-only and TTS-friendly:
 
 ```bash
 # Function calling
-WAV="$NEMO_DIR/examples/speechlm2/sample_audio/sample_fc.wav"
-API_RESPONSE_JSON="$NEMO_DIR/examples/speechlm2/function_calling/random_number_response.json"
-
 python "$NEMO_DIR/examples/speechlm2/offline_voicechat_fc_infer.py" \
-  --checkpoint "$CHECKPOINT" --wav "$WAV" \
-  --api-response-json "$API_RESPONSE_JSON" --output-dir "$OUTPUT_DIR"
+  --checkpoint /path/to/checkpoint \
+  --wav "$NEMO_DIR/examples/speechlm2/sample_audio/sample_fc.wav" \
+  --api-response-json "$NEMO_DIR/examples/speechlm2/function_calling/random_number_response.json" \
+  --output-dir /path/to/output
 ```
 
 ### Optimized NVIDIA inference container for interactive streaming deployment
@@ -188,7 +195,7 @@ Required inputs:
 - An RNNT `.nemo`. Its encoder config is used during STT conversion, and its decoder/joint weights are used in the final merge.
 - A reference speaker WAV.
 - A conda environment with the VoiceChat dependencies installed (see
-  [Create the conda environment](#2-create-the-conda-environment-once-per-machine)).
+  [Create the conda environment](#2-create-the-conda-environment)).
 
 The default Hydra configuration is
 `examples/speechlm2/conf/nemotron_voicechat_nano9b.yaml`.
