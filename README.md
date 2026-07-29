@@ -89,10 +89,11 @@ conda environment from step 2 provides every dependency this branch needs. What
 it does not provide is the VoiceChat model code, which lives in this repository.
 Prepending `NEMO_DIR` to `PYTHONPATH` makes Python import that code from this
 branch instead of the older `speechlm2` collection bundled with that release. Run
-both lines in every new shell:
+these lines in every new shell:
 
 ```bash
 conda activate voicechat
+export NEMO_DIR=/path/to/Speech
 export PYTHONPATH="$NEMO_DIR:${PYTHONPATH:-}"
 ```
 
