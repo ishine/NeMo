@@ -1,12 +1,12 @@
 > **Note:** This is the `nemotron-labs-voicechat` branch of
 > [`NVIDIA-NeMo/Speech`](https://github.com/NVIDIA-NeMo/Speech), holding the code
 > and instructions for the
-> [Nemotron Labs VoiceChat model](https://huggingface.co/nvidia/NVIDIA-NemotronLabs-VoiceChat-12B)
+> [Nemotron Labs VoiceChat model](https://huggingface.co/nvidia/NVIDIA-NemotronLabs-VoiceChat-11B)
 > on Hugging Face.
 
 ## Introduction
 
-NVIDIA NemotronLabs VoiceChat is a 12B end-to-end, real-time speech full duplex (FD) model for conversational AI that jointly performs streaming speech understanding and speech generation [1]. Unlike traditional cascaded stacks (ASR → LLM → TTS), this model achieves full duplex, real-time, seamless voice interaction in one unified architecture, eliminating the need for multiple models or API handoffs, thus reducing end-to-end latency. It sets new benchmarks by bringing open, robust, and highly natural conversation capabilities. Moreover, NVIDIA NemotronLabs VoiceChat is the first open full-duplex model to support tool calling while maintaining a natural conversation flow during tool execution. For each tool, a specific “on-hold” message can be defined that will be spoken by the agent as soon as the LLM generates the text that will trigger the tool call and response.
+NVIDIA NemotronLabs VoiceChat is a 11B end-to-end, real-time speech full duplex (FD) model for conversational AI that jointly performs streaming speech understanding and speech generation [1]. Unlike traditional cascaded stacks (ASR → LLM → TTS), this model achieves full duplex, real-time, seamless voice interaction in one unified architecture, eliminating the need for multiple models or API handoffs, thus reducing end-to-end latency. It sets new benchmarks by bringing open, robust, and highly natural conversation capabilities. Moreover, NVIDIA NemotronLabs VoiceChat is the first open full-duplex model to support tool calling while maintaining a natural conversation flow during tool execution. For each tool, a specific “on-hold” message can be defined that will be spoken by the agent as soon as the LLM generates the text that will trigger the tool call and response.
 
 The model operates on audio signals, which are encoded using a fast conformer module. The resulting audio tokens are inputted into a Nemotron Nano V2 9B LLM backbone to predict text tokens, which are fed to a TTS decoder [2] to predict audio codes for generating the agent's speech. A separate output channel is used to predict tool calling scripts. NemotronLabs VoiceChat offers an unprecedented trade-off between intelligence and latency in the space of open-source voice agents.
 
@@ -18,7 +18,7 @@ The model operates on audio signals, which are encoded using a fast conformer mo
 
 This guide explains how to test the NVIDIA Nemotron Labs VoiceChat model using either of the following approaches:
 
-- Load the [Hugging Face (HF) checkpoint](https://huggingface.co/nvidia/NVIDIA-NemotronLabs-VoiceChat-12B) for quick, non-interactive testing with offline batch inference using a conda environment.
+- Load the [Hugging Face (HF) checkpoint](https://huggingface.co/nvidia/NVIDIA-NemotronLabs-VoiceChat-11B) for quick, non-interactive testing with offline batch inference using a conda environment.
 - Use an optimized NVIDIA inference container for interactive audio testing with the same HF checkpoint.
 
 The available code can also be used for training. The resulting checkpoint can then be converted and used for inference as described above. Details on how to perform this conversion are provided in [Combine STT, TTS, and RNNT Checkpoints](#combine-stt-tts-and-rnnt-checkpoints).
@@ -78,7 +78,7 @@ python -c "import torch, torchcodec; from transformers.utils.import_utils import
 #### 3. Download the checkpoint
 
 ```bash
-hf download nvidia/NVIDIA-NemotronLabs-VoiceChat-12B \
+hf download nvidia/NVIDIA-NemotronLabs-VoiceChat-11B \
   --local-dir /path/to/checkpoint
 ```
 

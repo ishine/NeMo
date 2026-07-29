@@ -2,7 +2,7 @@
 
 Instead of relying on the container's built-in model download, you can generate a Triton model repository from a checkpoint and mount it directly. This is useful for:
 
-- **HuggingFace checkpoint** — use the publicly released [Nemotron Voicechat model on HuggingFace](https://huggingface.co/nvidia/NVIDIA-NemotronLabs-VoiceChat-12B).
+- **HuggingFace checkpoint** — use the publicly released [Nemotron Voicechat model on HuggingFace](https://huggingface.co/nvidia/NVIDIA-NemotronLabs-VoiceChat-11B).
 - **Custom checkpoint** — use a checkpoint from your own training run (e.g., fine-tuned or experimental weights). Substitute your checkpoint path wherever `~/nemotron-voicechat/hf-checkpoint` appears below.
 
 In both cases the checkpoint directory must contain `model.safetensors`.
@@ -15,7 +15,7 @@ Use the `deploy_s2s_model.sh` script bundled in the inference container at `/s2s
 
 ```bash
 mkdir -p ~/nemotron-voicechat/hf-checkpoint
-hf download nvidia/NVIDIA-NemotronLabs-VoiceChat-12B --local-dir ~/nemotron-voicechat/hf-checkpoint
+hf download nvidia/NVIDIA-NemotronLabs-VoiceChat-11B --local-dir ~/nemotron-voicechat/hf-checkpoint
 ```
 
 **Step 2 — Prepare the output directory and run the conversion:**
