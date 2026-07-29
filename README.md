@@ -208,8 +208,8 @@ Replace the example paths, tag, and step with values for your checkpoints:
 conda activate voicechat
 
 export NEMO_DIR=/path/to/Speech
-export WORKSPACE=/path/to/checkpoint-workspace
-export STEP=<N>   # training step of the STT checkpoint (matches step-<N>.ckpt)
+WORKSPACE=/path/to/checkpoint-workspace
+STEP=<N>   # training step of the STT checkpoint (matches step-<N>.ckpt)
 
 bash "$NEMO_DIR/examples/speechlm2/combine_ckpt_conda.sh" \
   --stt-fsdp-ckpt "$WORKSPACE/checkpoints/stt/step-${STEP}.ckpt" \
