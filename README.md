@@ -1,4 +1,4 @@
-> **Note:** This is the `nemotron-labs-voicechat` branch of
+> **Note:** This is the experimental `nemotron-labs-voicechat` branch of
 > [`NVIDIA-NeMo/Speech`](https://github.com/NVIDIA-NeMo/Speech), holding the code
 > and instructions for the
 > [Nemotron Labs VoiceChat model](https://huggingface.co/nvidia/NVIDIA-NemotronLabs-VoiceChat-11B)
