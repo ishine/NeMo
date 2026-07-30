@@ -22,7 +22,7 @@ The model operates on audio signals, which are encoded using a fast conformer mo
 This guide explains how to test the NVIDIA Nemotron Labs VoiceChat model using either of the following approaches:
 
 - Load the [Hugging Face (HF) checkpoint](https://huggingface.co/nvidia/NVIDIA-NemotronLabs-VoiceChat-11B) for quick, non-interactive testing with offline batch inference using a conda environment.
-- Use an optimized NVIDIA inference container for interactive audio testing with the same HF checkpoint.
+- Use an [optimized NVIDIA inference container](#optimized-nvidia-inference-container-for-interactive-streaming-deployment) for interactive audio testing with the same HF checkpoint.
 
 The available code can also be used for training. The resulting checkpoint can then be converted and used for inference as described above. Details on how to perform this conversion are provided in [Combine STT, TTS, and RNNT Checkpoints](#combine-stt-tts-and-rnnt-checkpoints).
 
