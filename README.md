@@ -171,6 +171,8 @@ Call a tool ONLY when the user's request matches one of the tools listed in <AVA
 
 Tool-call arguments must be values the user spoke. If a required argument is missing, ask the user; never guess.
 
+If a tool call fails or returns an error, do not retry the tool call for the same request. Tell the user that the API has an issue.
+
 You can use the following tools to assist the user if required:
 <AVAILABLE_TOOLS>[{"name": "get_weather", "description": "Get the current weather for a city", "parameters": {"type": "object", "properties": {"city": {"type": "string", "description": "The city name as the user spoke it"}}, "required": ["city"]}}, {"name": "get_stock_price", "description": "Get the current stock price for a given ticker symbol", "parameters": {"type": "object", "properties": {"symbol": {"type": "string", "description": "The stock ticker symbol as stated by the user"}}, "required": ["symbol"]}}, {"name": "get_top_news", "description": "Get today's top one news headline from Google News", "parameters": {"type": "object", "properties": {"topic": {"type": "string", "description": "Optional topic: business, technology, science, health, sports, entertainment"}}, "required": []}}]</AVAILABLE_TOOLS>
 
@@ -239,7 +241,7 @@ The script writes intermediate and final checkpoints under:
 ## License
 
 The NeMo codebase in this repository is licensed under the [Apache License 2.0](LICENSE).
-The Nemotron Labs VoiceChat model and corresponding inference container are licensed under
+The Nemotron Labs VoiceChat model is licensed under
 [OpenMDW 1.1](LICENSE_OpenMDW-1.1).
 
 ## Known Limitations
