@@ -3476,7 +3476,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         """Write debug information for input_signal and source_encoded to file."""
         import os
         
-        debug_dir = "/lustre/fsw/portfolios/convai/users/kevinhu/debug"
+        debug_dir = self.cfg.get("debug_dir", "/tmp/s2s_debug")
         os.makedirs(debug_dir, exist_ok=True)
         
         # Extract filename from sample_id or use a default

@@ -13,6 +13,8 @@ NVIDIA NemotronLabs VoiceChat is a 11B end-to-end, real-time speech full duplex 
 
 The model operates on audio signals, which are encoded using a fast conformer module. The resulting audio tokens are inputted into a Nemotron Nano V2 9B LLM backbone to predict text tokens, which are fed to a TTS decoder [2] to predict audio codes for generating the agent's speech. A separate output channel is used to predict tool calling scripts. NemotronLabs VoiceChat offers an unprecedented trade-off between intelligence and latency in the space of open-source voice agents.
 
+The released NemotronLabs VoiceChat checkpoint uses a single fixed voice and does not support voice cloning.
+
 ## Hardware Requirements
 
 - NVIDIA GPU with at least 80 GB of memory

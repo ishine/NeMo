@@ -693,8 +693,9 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         self.filler_response_delay = cfg.get("filler_response_delay", 0) if cfg is not None else 0
         self.filler_responses = None
         if self.add_filler_response_for_asr:
-            filler_response_file = cfg.get("filler_response_file",
-                "/lustre/fsw/portfolios/llmservice/users/apasad/data/duplex/filler_agent_responses/filler_agent_responses.json")
+            filler_response_file = cfg.get("filler_response_file", None)
+            if not filler_response_file:
+                raise ValueError("add_filler_response_for_asr=True requires cfg.filler_response_file")
             with open(filler_response_file, 'r') as f:
                 self.filler_responses = json.load(f)["agent_responses"]
             logging.info(f"Loaded {len(self.filler_responses)} filler responses from {filler_response_file}")
@@ -847,7 +848,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         if self.model_cfg is not None and self.model_cfg.get("debug", False):
             import torchaudio
             import os
-            debug_dir = "/lustre/fsw/portfolios/llmservice/users/apasad/data/duplex/debug_topic_src_tgt"
+            debug_dir = self.model_cfg.get("debug_dir", "/tmp/s2s_debug")
             os.makedirs(debug_dir, exist_ok=True)
             if identifier is not None:
                 audio_identity = identifier
