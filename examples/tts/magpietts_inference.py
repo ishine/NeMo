@@ -55,7 +55,6 @@ Example usage:
 from __future__ import annotations
 
 import argparse
-import copy
 import json
 import os
 import random
@@ -135,6 +134,8 @@ def append_metrics_to_csv(csv_path: str, checkpoint_name: str, dataset: str, met
         metrics.get('eou_silence_rate', ''),
         metrics.get('eou_noise_rate', ''),
         metrics.get('eou_error_rate', ''),
+        metrics.get('katakana_cer_filewise_avg', ''),
+        metrics.get('katakana_cer_cumulative', ''),
     ]
     with open(csv_path, "a") as f:
         f.write(",".join(str(v) for v in values) + "\n")
@@ -233,7 +234,8 @@ def run_inference_and_evaluation(
         "ssim_pred_gt_avg_alternate,ssim_pred_context_avg_alternate,"
         "ssim_gt_context_avg_alternate,cer_gt_audio_cumulative,wer_gt_audio_cumulative,"
         "utmosv2_avg,total_gen_audio_seconds,frechet_codec_distance,"
-        "eou_cutoff_rate,eou_silence_rate,eou_noise_rate,eou_error_rate"
+        "eou_cutoff_rate,eou_silence_rate,eou_noise_rate,eou_error_rate,"
+        "katakana_cer_filewise_avg,katakana_cer_cumulative"
     )
 
     for dataset in datasets:
@@ -241,15 +243,30 @@ def run_inference_and_evaluation(
 
         meta = dataset_meta_info[dataset]
         manifest_records = read_manifest(meta['manifest_path'])
-        language = meta.get('whisper_language', 'en')
 
-        # Prepare dataset metadata (remove evaluation-specific keys)
-        dataset_meta_for_dl = copy.deepcopy(meta)
-        for key in ["whisper_language", "load_cached_codes_if_available"]:
-            dataset_meta_for_dl.pop(key, None)
+        if 'asr_model' in meta:
+            asr_model_name = meta['asr_model']['name']
+            asr_model_type = meta['asr_model']['type']
+        else:
+            asr_model_name = eval_config.asr_model_name
+            asr_model_type = eval_config.asr_model_type
+
+        if 'language' in meta:
+            language = meta.get('language')
+        else:
+            language = eval_config.language
+
+        tokenizer_names = meta.get('tokenizer_names', None)
+
+        dataset_meta_for_dl = {
+            "manifest_path": meta["manifest_path"],
+            "audio_dir": meta["audio_dir"],
+            "language": language,
+            "tokenizer_names": tokenizer_names,
+        }
 
         # Setup output directories
-        eval_dir = os.path.join(out_dir, f"{full_checkpoint_name}_{dataset}")
+        eval_dir = os.path.join(out_dir, f"{full_checkpoint_name}_{language}_{dataset}")
         audio_dir = os.path.join(eval_dir, "audio")
         os.makedirs(eval_dir, exist_ok=True)
 
@@ -303,7 +320,8 @@ def run_inference_and_evaluation(
             # Run evaluation
             eval_config_for_dataset = EvaluationConfig(
                 sv_model=eval_config.sv_model,
-                asr_model_name=eval_config.asr_model_name,
+                asr_model_name=asr_model_name,
+                asr_model_type=asr_model_type,
                 eou_model_name=eval_config.eou_model_name,
                 language=language,
                 with_utmosv2=eval_config.with_utmosv2,
@@ -323,12 +341,14 @@ def run_inference_and_evaluation(
             filewise_metrics_all_repeats.extend(filewise_metrics)
 
             # Save metrics
-            with open(os.path.join(eval_dir, f"{dataset}_metrics_{repeat_idx}.json"), "w") as f:
+            metrics_path = os.path.join(eval_dir, f"{dataset}_metrics_{repeat_idx}.json")
+            with open(metrics_path, "w") as f:
                 json.dump(metrics, f, indent=4)
 
             sorted_filewise = sorted(filewise_metrics, key=lambda x: x.get('cer', 0), reverse=True)
-            with open(os.path.join(eval_dir, f"{dataset}_filewise_metrics_{repeat_idx}.json"), "w") as f:
-                json.dump(sorted_filewise, f, indent=4)
+            filewise_metrics_path = os.path.join(eval_dir, f"{dataset}_filewise_metrics_{repeat_idx}.json")
+            with open(filewise_metrics_path, "w", encoding="utf-8") as f:
+                json.dump(sorted_filewise, f, indent=4, ensure_ascii=False)
 
             # Append to per-run CSV
             append_metrics_to_csv(per_run_csv, full_checkpoint_name, dataset, metrics)
@@ -503,6 +523,12 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         help='Comma-separated list of dataset names to process',
     )
+    data_group.add_argument(
+        '--tokenizer_name',
+        type=str,
+        default="english_phoneme",
+        help='Default tokenizer to use when a language or dataset specific tokenizer is not provided.',
+    )
     data_group.add_argument('--out_dir', type=str, required=True, help='Output directory')
     data_group.add_argument('--log_exp_name', action='store_true')
     data_group.add_argument('--clean_up_disk', action='store_true')
@@ -521,7 +547,22 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     eval_group = parser.add_argument_group('Evaluation')
     eval_group.add_argument('--run_evaluation', action='store_true', help='Run evaluation after inference')
     eval_group.add_argument('--sv_model', type=str, default="titanet", choices=["titanet", "wavlm"])
-    eval_group.add_argument('--asr_model_name', type=str, default="nvidia/parakeet-tdt-1.1b")
+    eval_group.add_argument(
+        '--asr_model_name',
+        type=str,
+        default='nvidia/parakeet-tdt-1.1b',
+        help="ASR model to use for WER calculation, when not provided in dataset config",
+    )
+    eval_group.add_argument(
+        '--asr_model_type',
+        type=str,
+        default='nemo',
+        choices=['nemo', 'nemo_with_prompt', 'whisper'],
+        help="Type of ASR model provided in 'asr_model_name'",
+    )
+    eval_group.add_argument(
+        '--language', type=str, default="en", help='Language to use, when not provided in dataset config'
+    )
     eval_group.add_argument(
         '--eou_model_name',
         type=str,
@@ -645,6 +686,7 @@ def _build_magpie_config(args) -> MagpieInferenceConfig:
         maskgit_noise_scale=args.maskgit_noise_scale,
         maskgit_fixed_schedule=args.maskgit_fixed_schedule,
         maskgit_sampling_type=args.maskgit_sampling_type,
+        default_tokenizer_name=args.tokenizer_name,
     )
 
 
@@ -657,6 +699,7 @@ def _build_easy_magpie_config(args) -> EasyMagpieInferenceConfig:
         phoneme_input_type=args.phoneme_input_type,
         phoneme_sampling_method=args.phoneme_sampling_method,
         dropout_text_input=args.dropout_text_input,
+        default_tokenizer_name=args.tokenizer_name,
     )
 
 
@@ -694,7 +737,9 @@ def main(argv=None):
     eval_config = EvaluationConfig(
         sv_model=args.sv_model,
         asr_model_name=args.asr_model_name,
+        asr_model_type=args.asr_model_type,
         eou_model_name=args.eou_model_name,
+        language=args.language,
         with_utmosv2=not args.disable_utmosv2,
         with_fcd=not args.disable_fcd,
         codec_model_path=args.codecmodel_path if not args.disable_fcd else None,
