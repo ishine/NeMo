@@ -1,5 +1,5 @@
-# coding=utf-8
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,9 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# coding=utf-8
 # This code has been adapted from the following private repo: https://gitlab-master.nvidia.com/ADLR/megatron-lm/-/tree/prompt-learning/prefix_tuning_v2
 # Adapted by: @adithyare
-
 
 import itertools
 import os
@@ -41,7 +41,6 @@ from nemo.collections.nlp.parts.nlp_overrides import NLPSaveRestoreConnector
 from nemo.collections.nlp.parts.utils_funcs import get_last_rank
 from nemo.core.classes.mixins import adapter_mixins
 from nemo.utils import logging, model_utils
-
 
 class MegatronGPTBaseAdapterModel(MegatronGPTPromptLearningModel):
     def __init__(self, cfg: DictConfig, trainer: Trainer):
@@ -237,7 +236,6 @@ class MegatronGPTBaseAdapterModel(MegatronGPTPromptLearningModel):
         # so forceing lr to be 0.0 for gpt layers before param update
         return loss_mean
 
-
 class MegatronGPTAdapterLearningModel(MegatronGPTBaseAdapterModel):
     """
     MegatronGPTAdapterLearningModel is a model that combines a base model (GPTModel) with a adapters.
@@ -304,7 +302,6 @@ class MegatronGPTAdapterLearningModel(MegatronGPTBaseAdapterModel):
     @classmethod
     def list_available_models(cls):
         pass
-
 
 class MegatronGPTInfusedAdapterModel(MegatronGPTBaseAdapterModel):
     """

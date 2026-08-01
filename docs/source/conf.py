@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,6 +13,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+# -*- coding: utf-8 -*-
 
 import os
 import re
@@ -165,7 +166,6 @@ author = "NVIDIA CORPORATION"
 # |version| and |release|, also used in various other places throughout the
 # built documents.
 
-
 # The short X.Y version.
 # version = "0.10.0"
 version = __version__
@@ -254,7 +254,6 @@ html_theme_options = {
     'show_toc_level': 10,
 }
 
-
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
@@ -265,11 +264,9 @@ html_static_path = ['_static']
 
 html_last_updated_fmt = ''
 
-
 def setup(app):
     app.add_css_file('css/custom.css')
     app.add_js_file('js/pk_scripts.js')
-
 
 # html_css_files = [
 #     './custom.css',

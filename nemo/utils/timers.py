@@ -1,7 +1,5 @@
-"""
-This module support timing of code blocks.
-"""
-# Copyright (c) 2021, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,6 +13,9 @@ This module support timing of code blocks.
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""
+This module support timing of code blocks.
+"""
 import time
 from typing import Optional
 
@@ -22,7 +23,6 @@ import numpy as np
 import torch
 
 __all__ = ["NamedTimer", "SimpleTimer"]
-
 
 class NamedTimer(object):
     """
@@ -159,7 +159,6 @@ class NamedTimer(object):
         data = {k: fn(v["dt"]) for k, v in self.timers.items() if ("dt" in v)}
 
         return data
-
 
 class SimpleTimer:
     """

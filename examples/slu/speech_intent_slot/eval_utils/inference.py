@@ -1,5 +1,5 @@
-# ! /usr/bin/python
-# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
+# ! /usr/bin/python
 import glob
 import json
 import os
@@ -30,7 +30,6 @@ from nemo.collections.asr.models import SLUIntentSlotBPEModel
 from nemo.collections.asr.parts.utils.slu_utils import SequenceGeneratorConfig
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
-
 
 @dataclass
 class InferenceConfig:
@@ -57,7 +56,6 @@ class InferenceConfig:
 
     # Decoding strategy for semantic outputs
     sequence_generator: SequenceGeneratorConfig = SequenceGeneratorConfig(type="greedy")
-
 
 def slurp_inference(
     model,
@@ -110,7 +108,6 @@ def slurp_inference(
         model.preprocessor.featurizer.pad_to = pad_to_value
         logging.set_verbosity(logging_level)
     return hypotheses
-
 
 @hydra_runner(config_name="InferenceConfig", schema=InferenceConfig)
 def run_inference(cfg: InferenceConfig) -> InferenceConfig:
@@ -228,7 +225,6 @@ def run_inference(cfg: InferenceConfig) -> InferenceConfig:
 
     logging.info("Finished writing predictions !")
     return cfg
-
 
 if __name__ == '__main__':
     run_inference()  # noqa pylint: disable=no-value-for-parameter

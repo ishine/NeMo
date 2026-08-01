@@ -1,5 +1,5 @@
-# ! /usr/bin/python
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# ! /usr/bin/python
 # Copyright 2018-2019, Mingkun Huang
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -73,7 +74,6 @@ WARP_RNNT_INSTALLATION_MESSAGE = (
     "container that supports RNN-T loss."
 )
 
-
 @dataclass
 class RNNTLossConfig:
     loss_name: str
@@ -82,7 +82,6 @@ class RNNTLossConfig:
     installation_msg: str = ""
     min_version: Optional[str] = None
     force_float32: bool = True  # default True for now for all losses except graph-based
-
 
 # Resolved list of available RNNT losses
 RNNT_LOSS_RESOLVER = {
@@ -157,7 +156,6 @@ RNNT_LOSS_RESOLVER = {
 
 RNNT_LOSS_RESOLVER['default'] = RNNT_LOSS_RESOLVER['warprnnt_numba']
 
-
 def _warn_unused_additional_kwargs(loss_name, kwargs):
     if len(kwargs) > 0:
         logging.warning(
@@ -165,7 +163,6 @@ def _warn_unused_additional_kwargs(loss_name, kwargs):
             f"however they were ignored as it is unused.\n"
             f"{kwargs}"
         )
-
 
 def _clean_kwargs(
     loss_name: str, kwargs: Optional[Dict[str, Any]], init_method: Callable, ignore_params: Optional[Set[str]] = None
@@ -198,10 +195,8 @@ def _clean_kwargs(
         _warn_unused_additional_kwargs(loss_name, unused_kwargs)
     return used_kwargs
 
-
 def resolve_rnnt_default_loss_name() -> str:
     return RNNT_LOSS_RESOLVER['default'].loss_name
-
 
 def resolve_rnnt_loss(loss_name: str, blank_idx: int, loss_kwargs: dict = None) -> torch.nn.Module:
     loss_function_names = list(RNNT_LOSS_RESOLVER.keys())
@@ -328,7 +323,6 @@ def resolve_rnnt_loss(loss_name: str, blank_idx: int, loss_kwargs: dict = None) 
         )
 
     return loss_func
-
 
 class RNNTLoss(Loss):
     @property

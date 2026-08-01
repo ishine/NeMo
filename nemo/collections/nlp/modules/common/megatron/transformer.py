@@ -1,5 +1,5 @@
-# coding=utf-8
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# coding=utf-8
 """Transformer."""
 from contextlib import nullcontext
 from importlib.metadata import version
@@ -88,7 +89,6 @@ if not HAVE_TE:
                 "Transformer Engine was not found. transformer_engine.pytorch.transformer.TransformerLayer will not work. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
             )
 
-
 """ We use the following notation throughout this file:
      h: hidden size
      n: number of attention heads
@@ -104,13 +104,11 @@ if not HAVE_TE:
         hyperparameters: transformer hyperparameters
 """
 
-
 def get_bias_dropout_add(training):
     def _bias_dropout_add(x, bias, residual, prob):
         return bias_dropout_add(x, bias, residual, prob, training)
 
     return _bias_dropout_add
-
 
 def get_dropout_add(training):
     def _dropout_add(x, bias, residual, prob):
@@ -119,12 +117,10 @@ def get_dropout_add(training):
 
     return _dropout_add
 
-
 def remove_bias_from_layernorm(layer):
     for module in layer.modules():
         if hasattr(module, 'bias') and isinstance(module.bias, nn.Parameter):
             module.register_parameter('bias', None)
-
 
 class ParallelTransformerLayer_(MegatronModule, adapter_mixins.AdapterModuleMixin):
     """A single transformer layer.
@@ -660,7 +656,6 @@ class ParallelTransformerLayer_(MegatronModule, adapter_mixins.AdapterModuleMixi
 
         return output
 
-
 class ParallelTransformerLayer(ParallelTransformerLayer_):
     def __init__(
         self,
@@ -805,7 +800,6 @@ class ParallelTransformerLayer(ParallelTransformerLayer_):
                 encoder_max_sequence_len=encoder_max_sequence_len,
             )
 
-
 class AutocastTransformerLayer(TransformerLayer):
     def __init__(
         self,
@@ -928,7 +922,6 @@ class AutocastTransformerLayer(TransformerLayer):
                 is_first_microbatch=is_first_microbatch,
                 checkpoint_core_attention=checkpoint_core_attention,
             )
-
 
 class ParallelTransformer(MegatronModule):
     """Transformer class."""

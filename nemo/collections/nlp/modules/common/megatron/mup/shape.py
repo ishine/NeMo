@@ -1,5 +1,5 @@
-# coding=utf-8
-# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# coding=utf-8
 # MIT License
 #
 # Copyright (c) Microsoft Corporation.
@@ -54,14 +55,11 @@ __BSH_COMMENT__ = '''\
 # - a number indicates the base dimension of an "infinite" dimension, i.e. some notion of "width"
 '''
 
-
 def get_shapes(model):
     return {name: param.shape for name, param in model.named_parameters()}
 
-
 def get_infshapes(model):
     return {name: param.infshape for name, param in model.named_parameters()}
-
 
 def save_base_shapes(model_or_shapes, file):
     if isinstance(model_or_shapes, nn.Module):
@@ -76,13 +74,11 @@ def save_base_shapes(model_or_shapes, file):
     with open(file, 'w') as f:
         f.write(s)
 
-
 def load_base_shapes(filename):
     '''Get a dict of `InfShape` from a filename.'''
     with open(filename, 'r') as f:
         d = yaml.safe_load(f)
     return {k: InfShape.from_base_shape(v) for k, v in d.items()}
-
 
 def _dataparallel_hack(base_shapes, shapes):
     '''Fix module name discrepancy caused by (Distributed)DataParallel module.
@@ -97,7 +93,6 @@ def _dataparallel_hack(base_shapes, shapes):
     if all(not k.startswith('module.') for k in shapes) and all(k.startswith('module.') for k in base_shapes):
         return {k.strip('module.'): v for k, v in base_shapes.items()}, shapes
     return base_shapes, shapes
-
 
 def _extract_shapes(x):
     '''
@@ -123,7 +118,6 @@ def _extract_shapes(x):
         raise ValueError(f'unhandled x type: {type(x)}')
     return x_shapes
 
-
 def _zip_infshape_dict(base_shapes, shapes):
     '''make a dict of `InfShape` from two dicts of shapes.
     Inputs:
@@ -143,7 +137,6 @@ def _zip_infshape_dict(base_shapes, shapes):
         infshapes[name] = zip_infshape(bsh, shapes[name])
     return infshapes
 
-
 def zip_infshapes(base, target):
     '''make a dict of `InfShape` from models or dicts.
     Inputs:
@@ -155,7 +148,6 @@ def zip_infshapes(base, target):
     base_shapes = _extract_shapes(base)
     target_shapes = _extract_shapes(target)
     return _zip_infshape_dict(base_shapes, target_shapes)
-
 
 def clear_dims(infshape_dict):
     '''
@@ -170,7 +162,6 @@ def clear_dims(infshape_dict):
         for infdim in v:
             infdim.dim = None
     return d
-
 
 def make_base_shapes(base_shapes, delta_shapes, savefile=None):
     '''Make a base shape object from a base model/shapes and a delta model/shapes.
@@ -193,11 +184,9 @@ def make_base_shapes(base_shapes, delta_shapes, savefile=None):
         save_base_shapes(bsh, savefile)
     return bsh
 
-
 def apply_infshapes(model, infshapes):
     for name, p in model.named_parameters():
         p.infshape = infshapes[name]
-
 
 def set_base_shapes(model, base, rescale_params=True, delta=None, savefile=None, do_assert=True):
     '''Sets the `p.infshape` attribute for each parameter `p` of `model`.
@@ -236,7 +225,6 @@ def set_base_shapes(model, base, rescale_params=True, delta=None, savefile=None,
             elif isinstance(module, (Linear, _ConvNd)):
                 rescale_linear_bias(module)
     return model
-
 
 def assert_hidden_size_inf(model):
     '''

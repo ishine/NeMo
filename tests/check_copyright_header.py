@@ -1,4 +1,5 @@
-# Copyright (c) 2021, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,7 +21,10 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-EXCLUSIONS = ["scripts/get_commonvoice_data.py"]
+EXCLUSIONS = [
+    "scripts/get_commonvoice_data.py",
+    "nemo/utils/env_var_parsing.py",  # third-party MIT
+]
 
 
 def get_top_comments(_data):
@@ -57,56 +61,60 @@ def main():
     current_year = int(datetime.today().year)
     starting_year = 2020
     python_header_path = "tests/py_cprheader.txt"
-    with open(python_header_path, 'r', encoding='utf-8') as original:
-        pyheader = original.read().split("\n")
-        pyheader_lines = len(pyheader)
+    pyheader = Path(python_header_path).read_text(encoding='utf-8').splitlines()
+    pyheader_lines = len(pyheader)
 
     problematic_files = []
+    spdx_copyright_re = re.compile(
+        r"^# SPDX-FileCopyrightText: Copyright \(c\) (?P<year>\d{4}) "
+        r"NVIDIA CORPORATION & AFFILIATES\. All rights reserved\.\s*$"
+    )
+    spdx_license_re = re.compile(r"^# SPDX-License-Identifier: Apache-2\.0\s*$")
 
     for filename in Path(args.dir).rglob('*.py'):
-        if str(filename) in EXCLUSIONS:
+        rel = str(filename)
+        if rel in EXCLUSIONS or any(rel.endswith(e) for e in EXCLUSIONS):
             continue
         with open(str(filename), 'r', encoding='utf-8') as original:
             data = original.readlines()
 
-        data = get_top_comments(data)
-        if len(data) < pyheader_lines:
+        comments = get_top_comments(data)
+        if len(comments) < pyheader_lines:
             print(f"{filename} has less header lines than the copyright template")
             problematic_files.append(filename)
             continue
 
+        # Find NVIDIA SPDX copyright line (may follow third-party copyright lines)
         found = False
-        for i, line in enumerate(data):
-            if re.search(re.compile("Copyright.*NVIDIA.*", re.IGNORECASE), line):
-                # if re.search(re.compile("Copyright.*", re.IGNORECASE), line):
-                found = True
-                # Check 1st line manually
-                year_good = False
-                for year in range(starting_year, current_year + 1):
-                    year_line = pyheader[0].format(CURRENT_YEAR=year)
-                    if year_line in data[i]:
-                        year_good = True
-                        break
-                    year_line_aff = year_line.split(".")
-                    year_line_aff = year_line_aff[0] + " & AFFILIATES." + year_line_aff[1]
-                    if year_line_aff in data[i]:
-                        year_good = True
-                        break
-                if not year_good:
-                    problematic_files.append(filename)
-                    print(f"{filename} had an error with the year")
-                    break
-                while "opyright" in data[i]:
-                    i += 1
-                for j in range(1, pyheader_lines):
-                    if pyheader[j] not in data[i + j - 1]:
-                        problematic_files.append(filename)
-                        print(f"{filename} missed the line: {pyheader[j]}")
-                        break
-            if found:
+        for i, line in enumerate(comments):
+            m = spdx_copyright_re.match(line.rstrip("\n"))
+            if not m:
+                continue
+            found = True
+            year = int(m.group("year"))
+            if year < starting_year or year > current_year:
+                problematic_files.append(filename)
+                print(f"{filename} had an error with the year: {year}")
                 break
+            # Next non-third-party line should be SPDX-License-Identifier
+            if i + 1 >= len(comments) or not spdx_license_re.match(comments[i + 1].rstrip("\n")):
+                problematic_files.append(filename)
+                print(f"{filename} missing SPDX-License-Identifier: Apache-2.0 after copyright")
+                break
+            # Remaining template lines (from index 2) must appear after SPDX license line
+            base = i + 1
+            ok = True
+            for j in range(2, pyheader_lines):
+                if base + (j - 1) >= len(comments) or pyheader[j] not in comments[base + (j - 1)]:
+                    problematic_files.append(filename)
+                    print(f"{filename} missed the line: {pyheader[j]}")
+                    ok = False
+                    break
+            if not ok:
+                break
+            break
         if not found:
-            print(f"{filename} did not match the regex: `Copyright.*NVIDIA.*`")
+            print(f"{filename} did not match SPDX-FileCopyrightText NVIDIA header")
             problematic_files.append(filename)
 
     if len(problematic_files) > 0:

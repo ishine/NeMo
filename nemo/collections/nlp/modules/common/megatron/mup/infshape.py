@@ -1,5 +1,5 @@
-# coding=utf-8
-# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# coding=utf-8
 # MIT License
 #
 # Copyright (c) Microsoft Corporation.
@@ -36,7 +37,6 @@
 # SOFTWARE
 
 from copy import copy
-
 
 class InfDim:
     '''A dimension with a base dimension, used for calculating μP scaling.
@@ -76,7 +76,6 @@ class InfDim:
         if not isinstance(other, InfDim):
             return False
         return self.base_dim == other.base_dim and self.dim == other.dim
-
 
 class InfShape(tuple):
     '''A tuple of `InfDim`s.
@@ -149,7 +148,6 @@ class InfShape(tuple):
     def from_base_shape(cls, bsh):
         return InfShape([InfDim(bd, None) for bd in bsh])
 
-
 def zip_infshape(base_dims, dims, fin_if_same=True):
     infshape = []
     for bd, d in zip(base_dims, dims):
@@ -166,7 +164,6 @@ def zip_infshape(base_dims, dims, fin_if_same=True):
         else:
             raise ValueError(f'unhandled base_dim type: {type(bd)}')
     return InfShape(infshape)
-
 
 if __name__ == '__main__':
     infshape = InfShape([InfDim(None, 100), InfDim(128, 1024), InfDim(128, 128)])

@@ -1,5 +1,5 @@
-# ! /usr/bin/python
-# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# ! /usr/bin/python
 import os
 from math import ceil
 from typing import Any, Dict, List, Optional, Union
@@ -41,7 +42,6 @@ from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, Logprob
 from nemo.utils import logging, model_utils
 
 __all__ = ["SLUIntentSlotBPEModel"]
-
 
 class SLUIntentSlotBPEModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, ASRBPEMixin, ASRTranscriptionMixin):
     """Model for end-to-end speech intent classification and slot filling, which is formulated as a speech-to-sequence task"""

@@ -1,5 +1,5 @@
-# ! /usr/bin/python
-# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,13 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# ! /usr/bin/python
 import torch
 
 from nemo.core.classes import Loss, Typing, typecheck
 from nemo.core.neural_types import LabelsType, LengthsType, LossType, NeuralType, ProbsType
 
 __all__ = ['BCELoss']
-
 
 class BCELoss(Loss, Typing):
     """

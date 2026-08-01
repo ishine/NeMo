@@ -1,5 +1,5 @@
-# coding=utf-8
-# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,12 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# coding=utf-8
 import math
 
 import torch
 
 __all__ = ['ALiBiRelativePositionEmbedding']
-
 
 def get_slopes(n):
     def get_slopes_power_of_2(n):
@@ -37,7 +37,6 @@ def get_slopes(n):
 
     return slopes
 
-
 def build_slopes(num_attention_heads, num_attention_heads_alibi):
     """
     Builds a slopes tensor.
@@ -52,7 +51,6 @@ def build_slopes(num_attention_heads, num_attention_heads_alibi):
         slopes = slopes.to(torch.cuda.current_device())
 
     return slopes
-
 
 def build_relative_position(max_seq_len, full=True):
     """
@@ -69,7 +67,6 @@ def build_relative_position(max_seq_len, full=True):
         relative_position = relative_position.to(torch.cuda.current_device())
 
     return relative_position
-
 
 class ALiBiRelativePositionEmbedding(torch.nn.Module):
     """

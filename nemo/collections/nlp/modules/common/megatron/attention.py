@@ -1,5 +1,5 @@
-# coding=utf-8
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,6 +12,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+# coding=utf-8
 import math
 
 import torch
@@ -53,7 +55,6 @@ except (ImportError, ModuleNotFoundError):
     # fake missing classes with None attributes
     ModelType = AttnMaskType = AttnType = LayerType = ApexGuardDefaults()
 
-
 try:
     from megatron.core import ModelParallelConfig, parallel_state, tensor_parallel
 
@@ -72,7 +73,6 @@ try:
 except (ImportError, ModuleNotFoundError):
 
     flash_attn_func_triton = None
-
 
 try:
     # Flash Attention 1.X
@@ -118,7 +118,6 @@ except (ImportError, ModuleNotFoundError):
     tensor of the same size. We use the following arguments:
         hyperparameters: transformer hyperparameters
 """
-
 
 class ParallelAttention(MegatronModule, adapter_mixins.AdapterModuleMixin):
     """Parallel self-attention layer abstract class.
@@ -610,7 +609,6 @@ class ParallelAttention(MegatronModule, adapter_mixins.AdapterModuleMixin):
 
         return output, bias
 
-
 class ParallelChunkedCrossAttention(MegatronModule):
     """Parallel chunked cross-attention layer class.
 
@@ -769,7 +767,6 @@ class ParallelChunkedCrossAttention(MegatronModule):
         if not set_inference_key_value_memory and inference_max_sequence_len is not None:
             out = out[-1:]
         return out, bias
-
 
 class CoreAttention(MegatronModule):
     """Region where selective activation recomputation is applied.

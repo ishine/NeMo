@@ -1,7 +1,5 @@
-# Source: https://github.com/tartley/colorama/blob/master/colorama/ansi.py
-# Copyright: Jonathan Hartley 2013. BSD 3-Clause license.
-#
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,26 +13,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Source: https://github.com/tartley/colorama/blob/master/colorama/ansi.py
+# Copyright: Jonathan Hartley 2013. BSD 3-Clause license.
+#
 CSI = "\033["
 OSC = "\033]"
 BEL = "\007"
 
-
 def code_to_chars(code):
     return CSI + str(code) + "m"
-
 
 def set_title(title):
     return OSC + "2;" + title + BEL
 
-
 def clear_screen(mode=2):
     return CSI + str(mode) + "J"
 
-
 def clear_line(mode=2):
     return CSI + str(mode) + "K"
-
 
 class AnsiCodes(object):
     def __init__(self):
@@ -45,7 +41,6 @@ class AnsiCodes(object):
             if not name.startswith("_"):
                 value = getattr(self, name)
                 setattr(self, name, code_to_chars(value))
-
 
 class AnsiCursor(object):
     def UP(self, n=1):
@@ -62,7 +57,6 @@ class AnsiCursor(object):
 
     def POS(self, x=1, y=1):
         return CSI + str(y) + ";" + str(x) + "H"
-
 
 class AnsiFore(AnsiCodes):
     BLACK = 30
@@ -85,7 +79,6 @@ class AnsiFore(AnsiCodes):
     LIGHTCYAN_EX = 96
     LIGHTWHITE_EX = 97
 
-
 class AnsiBack(AnsiCodes):
     BLACK = 40
     RED = 41
@@ -107,13 +100,11 @@ class AnsiBack(AnsiCodes):
     LIGHTCYAN_EX = 106
     LIGHTWHITE_EX = 107
 
-
 class AnsiStyle(AnsiCodes):
     BRIGHT = 1
     DIM = 2
     NORMAL = 22
     RESET_ALL = 0
-
 
 Fore = AnsiFore()
 Back = AnsiBack()

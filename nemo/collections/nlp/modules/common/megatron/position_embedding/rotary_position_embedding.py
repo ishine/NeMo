@@ -1,5 +1,5 @@
-# coding=utf-8
-# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,12 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# coding=utf-8
 import torch
 from einops import rearrange
 from torch import einsum, nn
 
 __all__ = ['RotaryEmbedding', 'apply_rotary_pos_emb']
-
 
 class RotaryEmbedding(nn.Module):
     """
@@ -67,7 +67,6 @@ class RotaryEmbedding(nn.Module):
         # emb [seq_length, .., dim]
         return rearrange(emb, 'n d -> n 1 1 d')
 
-
 def _rotate_half(x):
     """
     change sign so the last dimension
@@ -76,7 +75,6 @@ def _rotate_half(x):
     x = rearrange(x, '... (j d) -> ... j d', j=2)
     x1, x2 = x.unbind(dim=-2)
     return torch.cat((-x2, x1), dim=-1)
-
 
 def apply_rotary_pos_emb(t, freqs):
     """

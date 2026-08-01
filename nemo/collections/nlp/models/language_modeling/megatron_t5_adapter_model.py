@@ -1,5 +1,5 @@
-# coding=utf-8
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# coding=utf-8
 # This code has been adapted from the following private repo: https://gitlab-master.nvidia.com/ADLR/megatron-lm/-/tree/prompt-learning/prefix_tuning_v2
 # Adapted by: @adithyare
 #
@@ -54,7 +55,6 @@ try:
 
 except (ImportError, ModuleNotFoundError):
     HAVE_MEGATRON_CORE = False
-
 
 class MegatronT5BaseAdapterModel(MegatronT5PromptLearningModel):
     def __init__(self, cfg: DictConfig, trainer: Trainer):
@@ -347,7 +347,6 @@ class MegatronT5BaseAdapterModel(MegatronT5PromptLearningModel):
         self._reconfigure_batch_sizes(gbs, mbs)
         self.validation_step_outputs.clear()  # free memory
 
-
 class MegatronT5AdapterLearningModel(MegatronT5BaseAdapterModel):
     """
     TODO  (@adithyare)
@@ -433,7 +432,6 @@ class MegatronT5AdapterLearningModel(MegatronT5BaseAdapterModel):
     @classmethod
     def list_available_models(cls):
         pass
-
 
 class MegatronT5LoraModel(MegatronT5BaseAdapterModel):
     """
@@ -563,7 +561,6 @@ class MegatronT5LoraModel(MegatronT5BaseAdapterModel):
     @classmethod
     def list_available_models(cls):
         pass
-
 
 class MegatronT5InfusedAdapterModel(MegatronT5BaseAdapterModel):
     """

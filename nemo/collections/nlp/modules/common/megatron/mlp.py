@@ -1,5 +1,5 @@
-# coding=utf-8
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,6 +12,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+# coding=utf-8
 import torch
 import torch.nn.functional as F
 
@@ -44,7 +46,6 @@ except (ImportError, ModuleNotFoundError):
     # fake missing classes with None attributes
     ModelType = AttnMaskType = AttnType = LayerType = ApexGuardDefaults()
 
-
 try:
     from megatron.core import ModelParallelConfig, parallel_state, tensor_parallel
     from megatron.core.parallel_state import get_tensor_model_parallel_world_size
@@ -56,7 +57,6 @@ except (ImportError, ModuleNotFoundError):
     ModelParallelConfig = ApexGuardDefaults
 
     HAVE_MEGATRON_CORE = False
-
 
 class ParallelMLP(MegatronModule, adapter_mixins.AdapterModuleMixin):
     """MLP.
@@ -274,7 +274,6 @@ class ParallelMLP(MegatronModule, adapter_mixins.AdapterModuleMixin):
                 lora_output = lora_dense_4h_to_h_adapter(intermediate_parallel)
                 output = output + lora_output
         return output, output_bias
-
 
 class SwitchMLP(MegatronModule):
     """Top-1 MoE

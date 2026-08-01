@@ -1,5 +1,5 @@
-# ! /usr/bin/python
-# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,11 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# ! /usr/bin/python
 import ast
 from typing import Dict, List, Tuple, Union
 
 from .evaluation.metrics.metrics import ErrorMetric
-
 
 def parse_semantics_str2dict(semantics_str: Union[List[str], str, Dict]) -> Tuple[Dict, bool]:
     """
@@ -75,7 +75,6 @@ def parse_semantics_str2dict(semantics_str: Union[List[str], str, Dict]) -> Tupl
             _dict["entities"][i] = item
 
     return _dict, invalid
-
 
 class SLURPEvaluator:
     """

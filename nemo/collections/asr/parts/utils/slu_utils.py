@@ -1,5 +1,5 @@
-# ! /usr/bin/python
-# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
+# ! /usr/bin/python
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -28,7 +28,6 @@ from nemo.collections.asr.modules.transformer import (
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.core.classes.module import NeuralModule
 
-
 @dataclass
 class SequenceGeneratorConfig:
     type: str = "greedy"  # choices=[greedy, topk, beam]
@@ -37,7 +36,6 @@ class SequenceGeneratorConfig:
     temperature: float = 1.0  # for top-k sampling
     beam_size: int = 1  # K for top-k sampling, N for beam search
     len_pen: float = 0.0  # for beam-search
-
 
 class SequenceGenerator:
     """
@@ -158,7 +156,6 @@ class SequenceGenerator:
             semantics_list.append(text)
         return semantics_list
 
-
 def get_seq_length(seq: torch.Tensor, eos_id: int) -> torch.Tensor:
     """
     Get sequence length.
@@ -172,7 +169,6 @@ def get_seq_length(seq: torch.Tensor, eos_id: int) -> torch.Tensor:
     pos = (seq == eos_id).long().nonzero()
     seq_lengths = torch.scatter(lengths, dim=0, index=pos[:, 0], src=pos[:, 1])
     return seq_lengths
-
 
 def pad_sequence(seq: torch.Tensor, max_len: int, pad_token: int = 0) -> torch.Tensor:
     """
@@ -190,7 +186,6 @@ def pad_sequence(seq: torch.Tensor, max_len: int, pad_token: int = 0) -> torch.T
 
     padding = torch.zeros(batch, max_len - curr_len, dtype=seq.dtype, device=seq.device).fill_(pad_token)
     return torch.cat([seq, padding], dim=1)
-
 
 def get_seq_mask(seq: torch.Tensor, seq_lens: torch.Tensor) -> torch.Tensor:
     """

@@ -1,5 +1,5 @@
-# -*- coding: utf-8 -*-
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# -*- coding: utf-8 -*-
 """ Script responsible for generation of a JSON file containing list of modules of a given collection. """
 
 import argparse
@@ -23,7 +24,6 @@ import os
 
 import nemo
 from nemo.utils import logging
-
 
 def process_member(name, obj, module_list):
     """ Helper function processing the passed object and, if ok, adding a record to the module list.
@@ -71,7 +71,6 @@ def process_member(name, obj, module_list):
             },
         }
     )
-
 
 def main():
     """ Main function analysing the indicated NeMo collection and generating a JSON file with module descriptions. """
@@ -153,7 +152,6 @@ def main():
     logging.info(
         'Finished analysis of the `{}` collection, results exported to `{}`.'.format(args.collection, filename)
     )
-
 
 if __name__ == '__main__':
     main()

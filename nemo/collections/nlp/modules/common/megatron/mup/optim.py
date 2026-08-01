@@ -1,5 +1,5 @@
-# coding=utf-8
-# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# coding=utf-8
 # MIT License
 #
 # Copyright (c) Microsoft Corporation.
@@ -62,7 +63,6 @@ from collections import defaultdict
 
 from torch.optim import SGD, Adam, AdamW
 
-
 def process_param_groups(params, **kwargs):
     param_groups = list(params)
     if not isinstance(param_groups[0], dict):
@@ -73,7 +73,6 @@ def process_param_groups(params, **kwargs):
         if 'weight_decay' not in param_group:
             param_group['weight_decay'] = kwargs.get('weight_decay', 0.0)
     return param_groups
-
 
 def MuAdam(params, impl=Adam, decoupled_wd=True, **kwargs):
     '''Adam with μP scaling.
@@ -122,7 +121,6 @@ def MuAdam(params, impl=Adam, decoupled_wd=True, **kwargs):
         new_param_groups.extend(list(matrix_like_p.values()) + [vector_like_p])
     return impl(new_param_groups, **kwargs)
 
-
 def MuAdamW(params, **kwargs):
     '''AdamW with μP scaling.
 
@@ -130,7 +128,6 @@ def MuAdamW(params, **kwargs):
     already using `mup.set_base_shapes`.
     '''
     return MuAdam(params, impl=AdamW, **kwargs)
-
 
 def MuSGD(params, impl=SGD, decoupled_wd=False, **kwargs):
     '''SGD with μP scaling.

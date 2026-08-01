@@ -1,5 +1,5 @@
-# coding=utf-8
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# coding=utf-8
 import enum
 import logging
 import math
@@ -63,7 +64,6 @@ except (ImportError, ModuleNotFoundError):
 
     HAVE_MEGATRON_CORE = False
 
-
 class AdapterName(str, enum.Enum):
     """
     Names for adapters used in NLP Adapters and IA3. Note: changing this will break backward compatibility.
@@ -90,7 +90,6 @@ class AdapterName(str, enum.Enum):
     MULTIMODAL_PROJECTOR_ADAPTER = "mm_projector_adapter"
     PARALLEL_LINEAR_ADAPTER = "parallel_linear_adapter"
 
-
 class InfusedAdapter(nn.Module, AdapterModuleUtil):
     def __init__(
         self, in_features: int, model_parallel_config: Optional[ModelParallelConfig] = None, **kwargs
@@ -115,7 +114,6 @@ class InfusedAdapter(nn.Module, AdapterModuleUtil):
         x = x * self.scalers[None, None, :]
         return x
 
-
 class MLPInfusedAdapter(InfusedAdapter):
     """
     MLPInfusedAdapter is basically a clone of InfusedAdapter. We do this to make the adapter_mixin agnostic to adapter names
@@ -124,17 +122,14 @@ class MLPInfusedAdapter(InfusedAdapter):
 
     pass
 
-
 @dataclass
 class InfusedAdapterConfig(AdapterConfig):
     in_features: int
     _target_: str = "{0}.{1}".format(InfusedAdapter.__module__, InfusedAdapter.__name__)
 
-
 @dataclass
 class MLPInfusedAdapterConfig(InfusedAdapterConfig):
     _target_: str = "{0}.{1}".format(MLPInfusedAdapter.__module__, MLPInfusedAdapter.__name__)
-
 
 def pad_seq_to_mult(x, mult):
     import torch.nn.functional as F
@@ -147,14 +142,12 @@ def pad_seq_to_mult(x, mult):
         x = torch.nn.functional.pad(x, (0, 0, 0, pad_len))
     return x, pad_len
 
-
 def unpad_seq_to_mult(x, pad_len):
     if pad_len <= 0:
         return x
     with torch.no_grad():
         # prune tail padding
         return x[:-pad_len, :]
-
 
 class ParallelLinearAdapter(nn.Module, AdapterModuleUtil):
     def __init__(
@@ -373,7 +366,6 @@ class ParallelLinearAdapter(nn.Module, AdapterModuleUtil):
         )
         return sharded_state_dict
 
-
 class _All2AllHp2Sp(torch.autograd.Function):
     """
     All-2-All from Hidden Parallel to Sequence Parallel
@@ -403,10 +395,8 @@ class _All2AllHp2Sp(torch.autograd.Function):
         x = torch.cat(receive_list, dim=0)
         return x
 
-
 def all2all_hp2sp(input_):
     return _All2AllHp2Sp.apply(input_)
-
 
 @dataclass
 class ParallelLinearAdapterConfig(AdapterConfig):
@@ -426,7 +416,6 @@ class ParallelLinearAdapterConfig(AdapterConfig):
     network_alpha: int | None = None
     a2a_experimental: bool = False
     _target_: str = "{0}.{1}".format(ParallelLinearAdapter.__module__, ParallelLinearAdapter.__name__)
-
 
 class MLPHeadAdapter(nn.Module, AdapterModuleUtil):
     def __init__(
@@ -471,13 +460,11 @@ class MLPHeadAdapter(nn.Module, AdapterModuleUtil):
         x, _ = self.linear(x)
         return x
 
-
 @dataclass
 class MLPHeadAdapterConfig(AdapterConfig):
     in_features: int
     out_features: int
     _target_: str = "{0}.{1}".format(MLPHeadAdapter.__module__, MLPHeadAdapter.__name__)
-
 
 class LoraKQVAdapter(ParallelLinearAdapter):
     """
@@ -487,7 +474,6 @@ class LoraKQVAdapter(ParallelLinearAdapter):
 
     pass
 
-
 class LoraKVAdapter(ParallelLinearAdapter):
     """
     Lora Adapters are the same arch as regular adapters but with potentially different input and output feature sizes
@@ -495,7 +481,6 @@ class LoraKVAdapter(ParallelLinearAdapter):
     """
 
     pass
-
 
 class LoraQAdapter(ParallelLinearAdapter):
     """
@@ -505,7 +490,6 @@ class LoraQAdapter(ParallelLinearAdapter):
 
     pass
 
-
 class LoraDenseAttentionAdapter(ParallelLinearAdapter):
     """
     Lora Adapters are the same arch as regular adapters but with potentially different input and output feature sizes
@@ -513,7 +497,6 @@ class LoraDenseAttentionAdapter(ParallelLinearAdapter):
     """
 
     pass
-
 
 class LoraHto4HAdapter(ParallelLinearAdapter):
     """
@@ -523,7 +506,6 @@ class LoraHto4HAdapter(ParallelLinearAdapter):
 
     pass
 
-
 class Lora4HtoHAdapter(ParallelLinearAdapter):
     """
     Lora Adapters are the same arch as regular adapters but with potentially different input and output feature sizes
@@ -532,38 +514,31 @@ class Lora4HtoHAdapter(ParallelLinearAdapter):
 
     pass
 
-
 @dataclass
 class LoraKQVAdapterConfig(ParallelLinearAdapterConfig):
     _target_: str = "{0}.{1}".format(LoraKQVAdapter.__module__, LoraKQVAdapter.__name__)
-
 
 @dataclass
 class LoraQAdapterConfig(ParallelLinearAdapterConfig):
     _target_: str = "{0}.{1}".format(LoraQAdapter.__module__, LoraQAdapter.__name__)
 
-
 @dataclass
 class LoraKVAdapterConfig(ParallelLinearAdapterConfig):
     _target_: str = "{0}.{1}".format(LoraKVAdapter.__module__, LoraKVAdapter.__name__)
-
 
 @dataclass
 class LoraDenseAttentionAdapterConfig(ParallelLinearAdapterConfig):
     _target_: str = "{0}.{1}".format(LoraDenseAttentionAdapter.__module__, LoraDenseAttentionAdapter.__name__)
     input_is_parallel: bool = True
 
-
 @dataclass
 class LoraHto4HAdapterConfig(ParallelLinearAdapterConfig):
     _target_: str = "{0}.{1}".format(LoraHto4HAdapter.__module__, LoraHto4HAdapter.__name__)
-
 
 @dataclass
 class Lora4HtoHAdapterConfig(ParallelLinearAdapterConfig):
     _target_: str = "{0}.{1}".format(Lora4HtoHAdapter.__module__, Lora4HtoHAdapter.__name__)
     input_is_parallel: bool = True
-
 
 class LoraUnfusedHto4HAdapter(nn.Module, AdapterModuleUtil):
     def __init__(
@@ -627,11 +602,9 @@ class LoraUnfusedHto4HAdapter(nn.Module, AdapterModuleUtil):
         x = torch.concat([gate_x, up_x], dim=2)
         return x
 
-
 @dataclass
 class LoraUnfusedHto4HAdapterConfig(ParallelLinearAdapterConfig):
     _target_: str = "{0}.{1}".format(LoraUnfusedHto4HAdapter.__module__, LoraUnfusedHto4HAdapter.__name__)
-
 
 class LoraUnfusedKQVAdapter(nn.Module, AdapterModuleUtil):
     def __init__(
@@ -693,7 +666,6 @@ class LoraUnfusedKQVAdapter(nn.Module, AdapterModuleUtil):
         vx = vx.reshape(vx.shape[0], vx.shape[1], -1, self.kv_channels)
         return qx, kx, vx
 
-
 @dataclass
 class LoraUnfusedKQVAdapterConfig(AdapterConfig):
     in_features: int
@@ -713,7 +685,6 @@ class LoraUnfusedKQVAdapterConfig(AdapterConfig):
     network_alpha: int | None = None
     a2a_experimental: bool = False
     _target_: str = "{0}.{1}".format(LoraUnfusedKQVAdapter.__module__, LoraUnfusedKQVAdapter.__name__)
-
 
 class LoraMoeAdapter(nn.Module, AdapterModuleUtil):
     def __init__(
@@ -763,7 +734,6 @@ class LoraMoeAdapter(nn.Module, AdapterModuleUtil):
     def forward(self, x, expert_idx):
         return self.expert_adapters[expert_idx](x)
 
-
 @dataclass
 class LoraMoeHto4HAdapterConfig(AdapterConfig):
     num_moe_experts: int
@@ -783,11 +753,9 @@ class LoraMoeHto4HAdapterConfig(AdapterConfig):
     a2a_experimental: bool = False
     _target_: str = "{0}.{1}".format(LoraMoeAdapter.__module__, LoraMoeAdapter.__name__)
 
-
 @dataclass
 class LoraMoe4HtoHAdapterConfig(LoraMoeHto4HAdapterConfig):
     input_is_parallel: bool = True
-
 
 class PromptEncoderAdapter(nn.Module, AdapterModuleUtil):
     """
@@ -912,7 +880,6 @@ class PromptEncoderAdapter(nn.Module, AdapterModuleUtil):
         output_embeds = output_embeds.expand(self.virtual_tokens, batch_size, self.output_dim)
         return output_embeds
 
-
 @dataclass
 class PromptEncoderAdapterConfig(AdapterConfig):
     virtual_tokens: int
@@ -921,7 +888,6 @@ class PromptEncoderAdapterConfig(AdapterConfig):
     init_std: float
     output_dim: int
     _target_: str = "{0}.{1}".format(PromptEncoderAdapter.__module__, PromptEncoderAdapter.__name__)
-
 
 class ParallelLinearAdapterWeightTying(ParallelLinearAdapter):
     """
@@ -1043,7 +1009,6 @@ class ParallelLinearAdapterWeightTying(ParallelLinearAdapter):
 
         return x
 
-
 @dataclass
 class ParallelLinearAdapterWeightTyingConfig:
     in_features: int
@@ -1063,7 +1028,6 @@ class ParallelLinearAdapterWeightTyingConfig:
         ParallelLinearAdapterWeightTying.__module__, ParallelLinearAdapterWeightTying.__name__
     )
 
-
 class LoraKQVAdapterWeightTying(ParallelLinearAdapterWeightTying):
     """
     TODO
@@ -1071,11 +1035,9 @@ class LoraKQVAdapterWeightTying(ParallelLinearAdapterWeightTying):
 
     pass
 
-
 @dataclass
 class LoraKQVAdapterWeightTyingConfig(ParallelLinearAdapterWeightTyingConfig):
     _target_: str = "{0}.{1}".format(LoraKQVAdapterWeightTying.__module__, LoraKQVAdapterWeightTying.__name__)
-
 
 class DownSampleBlock(nn.Module):
     def forward(self, x):
@@ -1098,7 +1060,6 @@ class DownSampleBlock(nn.Module):
         x = x.permute(0, 1, 2, 4, 3, 5).contiguous()
         x = x.view(b, T, F, int(h / 2), int(w / 2), int(c * 4))
         return x
-
 
 class MultimodalProjectorAdapter(nn.Module, AdapterModuleUtil):
     def __init__(self, adapter_type: str, in_features: int, out_features: int, bias: bool, **kwargs) -> None:
@@ -1130,7 +1091,6 @@ class MultimodalProjectorAdapter(nn.Module, AdapterModuleUtil):
 
     def forward(self, x):
         return self.mm_projector(x)
-
 
 @dataclass
 class MultimodalProjectorAdapterConfig:

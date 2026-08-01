@@ -1,5 +1,5 @@
-# ! /usr/bin/python
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# ! /usr/bin/python
 import torch
 from torch import nn
 
@@ -20,7 +21,6 @@ from nemo.core.classes import Serialization, Typing, typecheck
 from nemo.core.neural_types import LabelsType, LengthsType, LogprobsType, LossType, NeuralType
 
 __all__ = ['CTCLoss']
-
 
 class CTCLoss(nn.CTCLoss, Serialization, Typing):
     @property

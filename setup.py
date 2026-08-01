@@ -1,7 +1,5 @@
-# ! /usr/bin/python
-# -*- coding: utf-8 -*-
-
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,6 +12,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+# ! /usr/bin/python
+# -*- coding: utf-8 -*-
 
 """Setup for pip package."""
 
@@ -31,7 +32,6 @@ spec = importlib.util.spec_from_file_location('package_info', 'nemo/package_info
 package_info = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(package_info)
 
-
 __contact_emails__ = package_info.__contact_emails__
 __contact_names__ = package_info.__contact_names__
 __description__ = package_info.__description__
@@ -43,16 +43,13 @@ __package_name__ = package_info.__package_name__
 __repository_url__ = package_info.__repository_url__
 __version__ = package_info.__version__
 
-
 with open("README.md", "r", encoding='utf-8') as fh:
     long_description = fh.read()
     long_description_content_type = "text/markdown"
 
-
 ###############################################################################
 #                             Dependency Loading                              #
 # %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% #
-
 
 def req_file(filename, folder="requirements"):
     files = [filename] if not isinstance(filename, list) else filename
@@ -61,7 +58,6 @@ def req_file(filename, folder="requirements"):
         with open(os.path.join(folder, file), encoding='utf-8') as f:
             ans.extend(list(map(str.strip, f.readlines())))
     return ans
-
 
 install_requires = req_file("requirements.txt")
 
@@ -85,7 +81,6 @@ extras_require = {
     'deploy': req_file("requirements_deploy.txt"),
     'eval': req_file("requirements_eval.txt"),
 }
-
 
 extras_require['all'] = list(chain(val for key, val in extras_require.items() if key != 'deploy'))
 
@@ -158,11 +153,9 @@ extras_require['deploy'] = list(
     )
 )
 
-
 ###############################################################################
 #                            Code style checkers                              #
 # %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% #
-
 
 class StyleCommand(distutils_cmd.Command):
     __ISORT_BASE = 'isort'
@@ -228,7 +221,6 @@ class StyleCommand(distutils_cmd.Command):
 
     def finalize_options(self):
         pass
-
 
 ###############################################################################
 

@@ -1,5 +1,5 @@
-# coding=utf-8
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# coding=utf-8
 import torch
 
 from nemo.collections.nlp.modules.common.megatron.fused_bias_gelu import bias_gelu, bias_gelu_back
@@ -24,18 +25,15 @@ try:
 except (ImportError, ModuleNotFoundError):
     HAVE_APEX = False
 
-
 @torch.jit.script
 def bias_geglu(bias, y, bias_2, y_2):
     x_2 = bias_2 + y_2
     return bias_gelu(bias, y) * x_2
 
-
 @torch.jit.script
 def bias_geglu_back(g, bias, y, bias_2, y_2):
     x_2 = bias_2 + y_2
     return bias_gelu_back(g, bias, y) * x_2, bias_gelu(bias, y) * g
-
 
 class GeGLUFunction(torch.autograd.Function):
     @staticmethod
@@ -49,7 +47,6 @@ class GeGLUFunction(torch.autograd.Function):
         input, bias, input_2, bias_2 = ctx.saved_tensors
         tmp, tmp2 = bias_geglu_back(grad_output, bias, input, bias_2, input_2)
         return tmp, tmp, tmp2, tmp2
-
 
 def fused_bias_geglu(input, bias, input_2, bias_2):
     args = _cast_if_autocast_enabled(input, bias, input_2, bias_2)

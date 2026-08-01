@@ -1,5 +1,5 @@
-# coding=utf-8
-# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# coding=utf-8
 # MIT License
 #
 # Copyright (c) Microsoft Corporation.
@@ -62,7 +63,6 @@ from torch.nn.init import (
     calculate_gain,
 )
 
-
 def constant_std_init_(tensor, sampler_):
     assert hasattr(tensor, 'infshape'), 'Please call set_base_shapes(...)'
     if tensor.infshape.ninf() <= 1:
@@ -72,7 +72,6 @@ def constant_std_init_(tensor, sampler_):
     else:
         raise NotImplementedError()
     return tensor
-
 
 def uniform_(tensor, a=0, b=1):
     '''Drop-in replacement of `torch.nn.init.uniform_`.
@@ -90,7 +89,6 @@ def uniform_(tensor, a=0, b=1):
 
     return constant_std_init_(tensor, sampler_)
 
-
 def normal_(tensor, mean=0, std=1):
     '''Drop-in replacement of `torch.nn.init.normal_`.
     Note:
@@ -107,7 +105,6 @@ def normal_(tensor, mean=0, std=1):
 
     return constant_std_init_(tensor, sampler_)
 
-
 def ones_(tensor):
     '''Same as `torch.nn.init.ones_`.
     Note:
@@ -120,7 +117,6 @@ def ones_(tensor):
 
     return constant_std_init_(tensor, sampler_)
 
-
 def eye_(tensor):
     '''Same as `torch.nn.init.eye_`.
     Note:
@@ -128,7 +124,6 @@ def eye_(tensor):
     '''
     assert tensor.infshape.ninf() == 1, 'Sampler for (inf, inf) tensors should have mean 0'
     return torch.nn.init.eye_(tensor)
-
 
 def _inf_fan_adjust_xavier(scale, tensor):
     fan_out, fan_in = tensor.infshape[:2]
@@ -147,7 +142,6 @@ def _inf_fan_adjust_xavier(scale, tensor):
         raise NotImplementedError('can only handle 2 inf dimensions currently')
     return scale
 
-
 def xavier_uniform_(tensor, gain=1.0):
     '''Drop-in replacement of `torch.nn.init.xavier_uniform_`.
     Note:
@@ -161,7 +155,6 @@ def xavier_uniform_(tensor, gain=1.0):
     a = math.sqrt(3.0) * std  # Calculate uniform bounds from standard deviation
     return _no_grad_uniform_(tensor, -a, a)
 
-
 def xavier_normal_(tensor, gain=1.0):
     '''Drop-in replacement of `torch.nn.init.xavier_normal_`.
     Note:
@@ -173,7 +166,6 @@ def xavier_normal_(tensor, gain=1.0):
     std = gain * math.sqrt(2.0 / float(fan_in + fan_out))
     std = _inf_fan_adjust_xavier(std, tensor)
     return _no_grad_normal_(tensor, 0.0, std)
-
 
 def _inf_fan_adjust_kaiming(scale, tensor, mode):
     fan_out, fan_in = tensor.infshape[:2]
@@ -194,7 +186,6 @@ def _inf_fan_adjust_kaiming(scale, tensor, mode):
         raise NotImplementedError('can only handle <=2 inf dimensions currently')
     return scale
 
-
 def kaiming_normal_(tensor, a=0, mode='fan_in', nonlinearity='leaky_relu'):
     '''Drop-in replacement of `torch.nn.init.kaiming_normal_`.
     Note:
@@ -210,7 +201,6 @@ def kaiming_normal_(tensor, a=0, mode='fan_in', nonlinearity='leaky_relu'):
     std = _inf_fan_adjust_kaiming(gain / math.sqrt(fan), tensor, mode)
     with torch.no_grad():
         return tensor.normal_(0, std)
-
 
 def kaiming_uniform_(tensor, a=0, mode='fan_in', nonlinearity='leaky_relu'):
     '''Drop-in replacement of `torch.nn.init.kaiming_uniform_`.
@@ -228,7 +218,6 @@ def kaiming_uniform_(tensor, a=0, mode='fan_in', nonlinearity='leaky_relu'):
     bound = math.sqrt(3.0) * std  # Calculate uniform bounds from standard deviation
     with torch.no_grad():
         return tensor.uniform_(-bound, bound)
-
 
 try:
     from torch.nn.init import _no_grad_trunc_normal_
@@ -249,7 +238,6 @@ try:
             _no_grad_trunc_normal_(tensor, mean=mean * scale, std=std * scale, a=a * scale, b=b * scale)
 
         return constant_std_init_(tensor, sampler_)
-
 
 except (ImportError, ModuleNotFoundError):
     warnings.warn(

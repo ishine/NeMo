@@ -1,5 +1,5 @@
-# -*- coding: utf-8 -*-
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# -*- coding: utf-8 -*-
 """ Script responsible for generation of a JSON file with list of NeMo collections. """
 
 import argparse
@@ -22,7 +23,6 @@ import os
 
 import nemo
 from nemo.utils import logging
-
 
 def process_collection(id, col):
     """ Helper function processing the collection.
@@ -38,7 +38,6 @@ def process_collection(id, col):
         "version": col.__version__,
         "author": col.__author__,
     }
-
 
 def main():
     """ Main function generating a JSON file with list of NeMo collections. """
@@ -84,7 +83,6 @@ def main():
         json.dump(output_list, outfile)
 
     logging.info('Finshed the analysis, results exported to `{}`.'.format(args.filename))
-
 
 if __name__ == '__main__':
     main()

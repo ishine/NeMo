@@ -1,5 +1,5 @@
-# coding=utf-8
-# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# coding=utf-8
 import torch
 from nemo.collections.nlp.modules.common.megatron.utils import _cast_if_autocast_enabled
 
@@ -24,7 +25,6 @@ try:
     HAVE_APEX = True
 except (ImportError, ModuleNotFoundError):
     HAVE_APEX = False
-
 
 if HAVE_APEX:
     # TODO: use Apex implementation
@@ -42,13 +42,11 @@ if HAVE_APEX:
         def forward(self, x):
             return _fast_layer_norm(x, self.weight + 1, self.bias, self.epsilon, memory_efficient=False)
 
-
 else:
 
     class LayerNorm1P(torch.nn.Module):
         def __init__(self, *args, **kwargs):
             raise NotImplementedError('LayerNorm1P available only with apex installed')
-
 
 class LPLayerNorm(torch.nn.LayerNorm):
     def __init__(self, normalized_shape, eps=1e-05, elementwise_affine=True, device=None, dtype=None):

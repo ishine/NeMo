@@ -1,6 +1,5 @@
-"""Tests the round-trip conversion of LlavaNext models: HF → NeMo → HF."""
-
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Tests the round-trip conversion of LlavaNext models: HF → NeMo → HF."""
+
 '''
 python tests/collections/vlm/llava_next/test_hf_conversion.py
 '''
@@ -26,7 +27,6 @@ import torch
 from transformers import AutoTokenizer, LlavaNextForConditionalGeneration
 
 from nemo.collections import llm, vlm
-
 
 def get_parser():
     parser = argparse.ArgumentParser()
@@ -46,7 +46,6 @@ def get_parser():
         "--save-models", action="store_true", help="Save the intermediate NeMo model and re-exported HF model"
     )
     return parser
-
 
 def compare_parameters(model1, model2, label1="Model1", label2="Model2"):
     """Compare parameters between two models and report differences."""
@@ -118,7 +117,6 @@ def compare_parameters(model1, model2, label1="Model1", label2="Model2"):
 
     return results
 
-
 def compare_model_outputs(original_model, exported_model, tokenizer):
     """Compare the outputs of the original and exported models on a simple prompt."""
     print("\nComparing model outputs on a test prompt...")
@@ -152,7 +150,6 @@ def compare_model_outputs(original_model, exported_model, tokenizer):
         print(f"  Mean absolute difference: {diff.mean().item()}")
 
     return logits_match
-
 
 def run_conversion_pipeline(args):
     """Run the full HF → NeMo → HF conversion pipeline and validate results."""
@@ -237,7 +234,6 @@ def run_conversion_pipeline(args):
     else:
         print('\nRound-trip conversion had issues. See details above.')
         return False
-
 
 if __name__ == '__main__':
     args = get_parser().parse_args()

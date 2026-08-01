@@ -1,5 +1,5 @@
-# coding=utf-8
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,14 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
+# coding=utf-8
 try:
     from apex.transformer.layers.layer_norm import FastLayerNorm, MixedFusedLayerNorm
 
     HAVE_APEX = True
 except (ImportError, ModuleNotFoundError):
     HAVE_APEX = False
-
 
 def get_layer_norm(hidden_size, eps=1e-5, persist_layer_norm=False, sequence_parallel=False):
     # List of hiddens sizes supported in the persistent layer norm kernel

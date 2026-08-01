@@ -1,5 +1,5 @@
-# ! /usr/bin/python
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,13 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# ! /usr/bin/python
 from typing import List
 
 import torch
 
 from nemo.core.classes import Loss
 from nemo.core.neural_types import LabelsType, LengthsType, LogprobsType, LossType, NeuralType
-
 
 class RNNTLossPytorch(Loss):
     @property
@@ -117,7 +117,6 @@ class RNNTLossPytorch(Loss):
         log_prob = torch.stack(log_probs)
 
         return log_prob
-
 
 class TDTLossPytorch(Loss):
     """
@@ -247,7 +246,6 @@ class TDTLossPytorch(Loss):
         log_prob = torch.stack(log_probs)
 
         return log_prob, log_alpha
-
 
 class MultiblankRNNTLossPytorch(Loss):
     """
