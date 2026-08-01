@@ -112,10 +112,11 @@ python "$NEMO_DIR/examples/speechlm2/offline_voicechat_infer.py" \
 When using a custom audio file, include sufficient trailing silence so the agent
 has time to respond.
 
-For function calling, offline inference does not call a real tool API. Instead,
-`--api-response-json` supplies a pre-written tool response that is injected on
-the second pass. Its `tool_name` must match an available tool, and `response`
-must be ASCII-only and TTS-friendly:
+Offline function calling does not invoke a live tool.
+`--api-response-json` points to a JSON file with a pre-written tool response.
+Its `tool_name` must match an available tool, and `response` must be ASCII-only
+and TTS-friendly. For interactive function calling with live tool execution, see
+[Optimized NVIDIA inference container for interactive streaming deployment](#optimized-nvidia-inference-container-for-interactive-streaming-deployment).
 
 ```bash
 # Function calling
