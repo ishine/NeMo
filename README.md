@@ -74,7 +74,7 @@ pip install ninja packaging wheel einops
 pip install --no-build-isolation --no-deps causal-conv1d==1.6.2.post1 mamba-ssm==2.3.2.post1
 ```
 
-Verify the install (expect: `2.10.0+cu128 True True <your GPU>`):
+Verify the install (expect: `2.10.0+cu* True True <your GPU>`):
 
 ```bash
 python -c "import torch, torchcodec; from transformers.utils.import_utils import is_mamba_2_ssm_available as m, is_causal_conv1d_available as c; print(torch.__version__, m(), c(), torch.cuda.get_device_name(0))"
@@ -109,8 +109,9 @@ python "$NEMO_DIR/examples/speechlm2/offline_voicechat_infer.py" \
   --output-dir /path/to/output
 ```
 
-For function calling, `--api-response-json` supplies the tool response injected
-on the second pass. Its `tool_name` must match an available tool, and `response`
+For function calling, offline inference does not call a real tool API. Instead,
+`--api-response-json` supplies a pre-written tool response that is injected on
+the second pass. Its `tool_name` must match an available tool, and `response`
 must be ASCII-only and TTS-friendly:
 
 ```bash
@@ -120,6 +121,13 @@ python "$NEMO_DIR/examples/speechlm2/offline_voicechat_fc_infer.py" \
   --wav "$NEMO_DIR/examples/speechlm2/sample_audio/sample_fc.wav" \
   --api-response-json "$NEMO_DIR/examples/speechlm2/function_calling/random_number_response.json" \
   --output-dir /path/to/output
+```
+
+After the run, inspect the JSON file in the output directory (for example
+`sample_fc_fc.json`) to see the predicted function call, such as:
+
+```text
+<TOOLCALL>[{"name": "generate_random_number", "arguments": {"min": 1, "max": 50}}]</TOOLCALL>
 ```
 
 ### Optimized NVIDIA inference container for interactive streaming deployment
