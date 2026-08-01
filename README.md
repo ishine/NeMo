@@ -109,6 +109,9 @@ python "$NEMO_DIR/examples/speechlm2/offline_voicechat_infer.py" \
   --output-dir /path/to/output
 ```
 
+When using a custom audio file, include sufficient trailing silence so the agent
+has time to respond.
+
 For function calling, offline inference does not call a real tool API. Instead,
 `--api-response-json` supplies a pre-written tool response that is injected on
 the second pass. Its `tool_name` must match an available tool, and `response`
@@ -123,8 +126,8 @@ python "$NEMO_DIR/examples/speechlm2/offline_voicechat_fc_infer.py" \
   --output-dir /path/to/output
 ```
 
-After the run, inspect the JSON file in the output directory (for example
-`sample_fc_fc.json`) to see the predicted function call, such as:
+After the run, inspect the JSON file in the output directory to see the
+predicted function call, such as:
 
 ```text
 <TOOLCALL>[{"name": "generate_random_number", "arguments": {"min": 1, "max": 50}}]</TOOLCALL>
