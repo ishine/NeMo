@@ -58,7 +58,7 @@ conda activate voicechat
 # torch 2.10 is deliberate: it is the newest release with prebuilt mamba-ssm /
 # causal-conv1d wheels AND a matching torchaudio. Newer torch = 20+ min of nvcc.
 pip install torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0
-pip install "nemo_toolkit[all]==2.6.2"
+pip install -e "/path/to/Speech[all]"
 # megatron-core 0.18.2 asserts nvidia-resiliency-ext>=0.6.0 while NeMo pins
 # 0.5.0, which crashes on import. It is training-only, so remove it.
 pip uninstall -y nvidia-resiliency-ext
@@ -89,17 +89,14 @@ hf download nvidia/NVIDIA-NemotronLabs-VoiceChat-11B \
 
 #### 4. Run offline inference
 
-Between `nemo_toolkit==2.6.2` and the extra packages installed alongside it, the
-conda environment from step 2 provides every dependency this branch needs. What
-it does not provide is the VoiceChat model code, which lives in this repository.
-Prepending `NEMO_DIR` to `PYTHONPATH` makes Python import that code from this
-branch instead of the older `speechlm2` collection bundled with that release. Run
-these lines in every new shell:
+The editable install from step 2 (`pip install -e "/path/to/Speech[all]"`)
+plus the extra packages provide the dependencies and VoiceChat code from this
+branch. Set `NEMO_DIR` so the example commands below can find scripts and
+sample audio. Run these lines in every new shell:
 
 ```bash
 conda activate voicechat
 export NEMO_DIR=/path/to/Speech
-export PYTHONPATH="$NEMO_DIR:${PYTHONPATH:-}"
 ```
 
 Then run:
