@@ -23,8 +23,8 @@ The released NemotronLabs VoiceChat checkpoint uses a single fixed voice and doe
 
 This guide explains how to test the NVIDIA Nemotron Labs VoiceChat model using either of the following approaches:
 
-- Load the [Hugging Face (HF) checkpoint](https://huggingface.co/nvidia/NVIDIA-NemotronLabs-VoiceChat-11B) for quick, non-interactive testing with offline batch inference using a conda environment.
-- Use an [optimized NVIDIA inference container](#optimized-nvidia-inference-container-for-interactive-streaming-deployment) for interactive audio testing with the same HF checkpoint.
+- **Offline inference** — load the [Hugging Face (HF) checkpoint](https://huggingface.co/nvidia/NVIDIA-NemotronLabs-VoiceChat-11B) for quick, non-interactive testing with offline batch inference using a conda environment.
+- **Interactive streaming** — use an [optimized NVIDIA inference container](#optimized-nvidia-inference-container-for-interactive-streaming-deployment) for interactive audio testing with the same HF checkpoint.
 
 The available code can also be used for training. The resulting checkpoint can then be converted and used for inference as described above. Details on how to perform this conversion are provided in [Combine STT, TTS, and RNNT Checkpoints](#combine-stt-tts-and-rnnt-checkpoints).
 
@@ -58,7 +58,7 @@ conda activate voicechat
 # torch 2.10 is deliberate: it is the newest release with prebuilt mamba-ssm /
 # causal-conv1d wheels AND a matching torchaudio. Newer torch = 20+ min of nvcc.
 pip install torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0
-pip install -e "/path/to/Speech[all]"
+pip install -e ".[all]"
 # megatron-core 0.18.2 asserts nvidia-resiliency-ext>=0.6.0 while NeMo pins
 # 0.5.0, which crashes on import. It is training-only, so remove it.
 pip uninstall -y nvidia-resiliency-ext
@@ -89,7 +89,7 @@ hf download nvidia/NVIDIA-NemotronLabs-VoiceChat-11B \
 
 #### 4. Run offline inference
 
-The editable install from step 2 (`pip install -e "/path/to/Speech[all]"`)
+The editable install from step 2 (`pip install -e ".[all]"`)
 plus the extra packages provide the dependencies and VoiceChat code from this
 branch. Set `NEMO_DIR` so the example commands below can find scripts and
 sample audio. Run these lines in every new shell:
@@ -176,9 +176,9 @@ NEVER say "I don't have a tool for that" for general knowledge questions you can
 
 DO NOT use any tools when not needed to answer the user's requests, under no circumstance.
 
-You are an expert across history, geography, science, math, literature, biographies, languages, recipes, programming, current affairs, and general knowledge. When the user asks about any of these, answer directly and conversationally from your own knowledge — no <TOOLCALL>.
+You are an expert across history, geography, science, math, literature, biographies, languages, recipes, programming, current affairs, and general knowledge. When the user asks about any of these, answer directly and conversationally from your own knowledge - no <TOOLCALL>.
 
-Call a tool ONLY when the user's request matches one of the tools listed in <AVAILABLE_TOOLS> below. For every other request, do not call any tool — just answer from your knowledge. Never invent or call a tool name that is not literally in <AVAILABLE_TOOLS>.
+Call a tool ONLY when the user's request matches one of the tools listed in <AVAILABLE_TOOLS> below. For every other request, do not call any tool - just answer from your knowledge. Never invent or call a tool name that is not literally in <AVAILABLE_TOOLS>.
 
 Tool-call arguments must be values the user spoke. If a required argument is missing, ask the user; never guess.
 
