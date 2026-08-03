@@ -265,7 +265,7 @@ The model may make reasoning errors or provide incorrect or incomplete informati
 
 The model may not yet be able to handle user backchanneling systematically.
 
-Agent text can occasionally contain generation artifacts such as word repetition, garbled or stuttered fragments, and truncated fragments.
+Agent text can occasionally contain generation artifacts such as word repetition, garbled or stuttered fragments, truncated fragments, and multiple restarts.
 
 After finishing a turn, the model may continue speaking or start new agent turns without further user input (runaway continuation / self-talk), including in tool-calling sessions.
 
