@@ -265,6 +265,12 @@ The model may make reasoning errors or provide incorrect or incomplete informati
 
 The model may not yet be able to handle user backchanneling systematically.
 
+Agent text can occasionally contain generation artifacts such as word repetition, garbled or stuttered fragments, and truncated fragments.
+
+After finishing a turn, the model may continue speaking or start new agent turns without further user input (runaway continuation / self-talk), including in tool-calling sessions.
+
+User transcription may intermittently drop leading or mid-phrase words even on clear audio, and in some cases the user query may be missing in the log.
+
 For tool calling, we recommend using no more than five tools per session, as additional tools may degrade performance. The model cannot yet reliably call multiple tools simultaneously. Long tool responses may delay the agent's speech; on-hold messages can help mitigate these delays. Users cannot interrupt the agent while a tool call is being executed. In mixed conversations that combine general chat and tool requests, the model may answer from its own knowledge instead of calling the appropriate tool.
 
 To ensure reliable speech output, system prompts must contain only ASCII characters. Avoid Unicode punctuation and symbols, including but not limited to em dashes (U+2014), en dashes (U+2013), degree symbols, and emoji. For example, write "72 degrees Fahrenheit" instead of using a degree symbol.
