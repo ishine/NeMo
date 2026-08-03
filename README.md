@@ -257,24 +257,30 @@ The Nemotron Labs VoiceChat model is licensed under
 
 ## Known Limitations
 
-NemotronLabs VoiceChat is trained with audio context windows of up to two minutes. Conversational context beyond this window may not be retained reliably.
+NemotronLabs VoiceChat is trained with no more than 2-min long audio context windows. Conversational context beyond this window may not be retained reliably.
 
-NemotronLabs VoiceChat has been optimized to balance general knowledge and natural conversation. Consequently, it may not perform as well as its LLM backbone, NVIDIA Nemotron Nano v2, in terms of knowledge, instruction-following capabilities, and safety.
+NemotronLabs VoiceChat has been optimized to achieve a trade-off between general knowledge and natural conversation, hence it may not be as performant as the LLM backbone it is derived from, namely NVIDIA Nemotron Nano v2, in terms of knowledge, instruction-following capabilities and safety.
 
-The model may make reasoning errors or provide incorrect or incomplete information. NemotronLabs VoiceChat was not explicitly trained for reasoning or alignment, so its performance on tasks requiring multi-step reasoning, arithmetic, or safety-aligned behavior may be limited. It may also hallucinate facts or self-identity, and can degrade into non-recoverable gibberish after several turns.
+The model can make reasoning errors or provide incorrect/incomplete information. NemotronLabs VoiceChat was not explicitly trained for reasoning or alignment. Its performance on tasks requiring multi-step reasoning, arithmetic, or safety-aligned behavior may therefore be limited.
 
-The model may not yet be able to handle user backchanneling systematically. It may also continue speaking without user input, repeat canned or irrelevant replies, enter clarification/refusal loops, or cut off the user on mid-sentence pauses.
+It may also hallucinate facts or self-identity, and can degrade into non-recoverable gibberish after several turns.
 
-Agent text can occasionally contain generation artifacts such as word repetition, garbled or truncated fragments, clubbed words, and multiple restarts. Spoken output may end early, and sessions can get stuck in a word/sentence loop.
+Further, the model may not yet be able to systematically handle user backchannelling.
+
+Agent text can occasionally contain generation artifacts such as word repetition, garbled or stuttered fragments, truncated fragments, and multiple restarts.
+
+Spoken output may end early, and sessions can get stuck in a word/sentence loop.
+
+After finishing a turn, the model may continue speaking or start new agent turns without further user input (runaway continuation / self-talk), including in tool-calling sessions.
+
+It may also repeat canned or irrelevant replies, enter clarification/refusal loops, or cut off the user on mid-sentence pauses.
 
 User transcription may intermittently drop leading or mid-phrase words even on clear audio, and in some cases the user query may be missing in the log.
 
 Instruction following can be unreliable (for example response length or language switching).
 
-For tool calling, we recommend using no more than five tools per session, as additional tools may degrade performance. The model cannot yet reliably call multiple tools simultaneously. Tool use can be intermittent (wrong or skipped tools, invented arguments, or mis-spoken tool results). Long tool responses may delay the agent's speech; on-hold messages can help mitigate these delays. Users cannot interrupt the agent while a tool call is being executed. In mixed conversations that combine general chat and tool requests, the model may answer from its own knowledge instead of calling the appropriate tool.
+As far as tool calling is concerned, we recommend a maximum of 5 tools per session; more tools may degrade performance. Also, the model cannot yet reliably call multiple tools simultaneously. Long tool responses may cause delays before the agent speaks (mitigate with on-hold messages). The user cannot interrupt the agent during tool calling execution. Further, in mixed conversations (general chat + tool requests), the model may answer from its own knowledge instead of calling the appropriate tool.
 
-To ensure reliable speech output, system prompts must contain only ASCII characters. Avoid Unicode punctuation and symbols, including but not limited to em dashes (U+2014), en dashes (U+2013), degree symbols, and emoji. For example, write "72 degrees Fahrenheit" instead of using a degree symbol.
+Tool use can also be intermittent (wrong or skipped tools, invented arguments, or mis-spoken tool results).
 
-External API and tool responses must be converted into concise, ASCII-only, TTS-friendly sentences before being passed to the model.
-
-Finally, the model is not suitable for noisy or highly reverberant environments, especially those with background speech.
+Finally, the model is not suitable for noisy or highly reverberant environments, especially where background speech may occur.
