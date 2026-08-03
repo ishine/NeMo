@@ -267,7 +267,7 @@ It may also hallucinate facts or self-identity, and can degrade into non-recover
 
 Further, the model may not yet be able to systematically handle user backchannelling.
 
-Agent text can occasionally contain generation artifacts such as word repetition, garbled or stuttered fragments, truncated fragments, and multiple restarts.
+Agent text can occasionally contain generation artifacts such as word repetition, garbled or truncated fragments, clubbed words, and multiple restarts.
 
 Spoken output may end early, and sessions can get stuck in a word/sentence loop.
 
