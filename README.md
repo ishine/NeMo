@@ -11,7 +11,7 @@
 
 NVIDIA NemotronLabs VoiceChat is a 11B end-to-end, real-time speech full duplex (FD) model for conversational AI that jointly performs streaming speech understanding and speech generation [1]. Unlike traditional cascaded stacks (ASR → LLM → TTS), this model achieves full duplex, real-time, seamless voice interaction in one unified architecture, eliminating the need for multiple models or API handoffs, thus reducing end-to-end latency. It sets new benchmarks by bringing open, robust, and highly natural conversation capabilities. Moreover, NVIDIA NemotronLabs VoiceChat is the first open full-duplex model to support tool calling while maintaining a natural conversation flow during tool execution. For each tool, a specific “on-hold” message can be defined that will be spoken by the agent as soon as the LLM generates the text that will trigger the tool call and response.
 
-The model operates on audio signals, which are encoded using a fast conformer module. The resulting audio tokens are inputted into a Nemotron Nano V2 9B LLM backbone to predict text tokens, which are fed to a TTS decoder [2] to predict audio codes for generating the agent's speech. A separate output channel is used to predict tool calling scripts. NemotronLabs VoiceChat offers an unprecedented trade-off between intelligence and latency in the space of open-source voice agents.
+The model operates on audio signals, which are encoded using a fast conformer module. The resulting audio tokens are inputted into a NVIDIA-Nemotron-Nano-9B-v2 LLM backbone to predict text tokens, which are fed to a TTS decoder [2] to predict audio codes for generating the agent's speech. A separate output channel is used to predict tool calling scripts. NemotronLabs VoiceChat offers an unprecedented trade-off between intelligence and latency in the space of open-source voice agents.
 
 The released NemotronLabs VoiceChat checkpoint uses a single fixed voice and does not support voice cloning.
 
@@ -103,7 +103,7 @@ Then run:
 
 ```bash
 # General
-python "$NEMO_DIR/examples/speechlm2/offline_voicechat_infer.py" \
+python "$NEMO_DIR/examples/speechlm2/offline_nemotron-labs-voicechat_infer.py" \
   --checkpoint /path/to/checkpoint \
   --wav "$NEMO_DIR/examples/speechlm2/sample_audio/sample_general.wav" \
   --output-dir /path/to/output
@@ -120,7 +120,7 @@ and TTS-friendly. For interactive function calling with live tool execution, see
 
 ```bash
 # Function calling
-python "$NEMO_DIR/examples/speechlm2/offline_voicechat_fc_infer.py" \
+python "$NEMO_DIR/examples/speechlm2/offline_nemotron-labs-voicechat_fc_infer.py" \
   --checkpoint /path/to/checkpoint \
   --wav "$NEMO_DIR/examples/speechlm2/sample_audio/sample_fc.wav" \
   --api-response-json "$NEMO_DIR/examples/speechlm2/function_calling/random_number_response.json" \
@@ -154,7 +154,7 @@ The [Nemotron Voicechat container](voicechat_realtime_instructions/deploy.md) pa
 
 The default Jinja template appends the available tools and tool-call protocol to
 the supplied system message. See
-`examples/speechlm2/offline_voicechat_fc_infer.py` for the default
+`examples/speechlm2/offline_nemotron-labs-voicechat_fc_infer.py` for the default
 function-calling system prompt and prompt construction logic.
 
 System prompts and API/tool responses must be ASCII-only. Avoid Unicode
@@ -215,7 +215,7 @@ Required inputs:
   [Create the conda environment](#2-create-the-conda-environment)).
 
 The default Hydra configuration is
-`examples/speechlm2/conf/nemotron_voicechat_nano9b.yaml`.
+`examples/speechlm2/conf/nemotron-labs-voicechat.yaml`.
 
 Activate your conda environment first, then run the following command.
 Replace the example paths, tag, and step with values for your checkpoints:
@@ -259,7 +259,7 @@ The Nemotron Labs VoiceChat model is licensed under
 
 NemotronLabs VoiceChat is trained with no more than 2-min long audio context windows. Conversational context beyond this window may not be retained reliably.
 
-NemotronLabs VoiceChat has been optimized to achieve a trade-off between general knowledge and natural conversation, hence it may not be as performant as the LLM backbone it is derived from, namely NVIDIA Nemotron Nano v2, in terms of knowledge, instruction-following capabilities and safety.
+NemotronLabs VoiceChat has been optimized to achieve a trade-off between general knowledge and natural conversation, hence it may not be as performant as the LLM backbone it is derived from, namely NVIDIA-Nemotron-Nano-9B-v2, in terms of knowledge, instruction-following capabilities and safety.
 
 The model can make reasoning errors or provide incorrect/incomplete information. NemotronLabs VoiceChat was not explicitly trained for reasoning or alignment. Its performance on tasks requiring multi-step reasoning, arithmetic, or safety-aligned behavior may therefore be limited.
 

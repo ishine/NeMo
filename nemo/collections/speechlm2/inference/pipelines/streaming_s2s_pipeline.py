@@ -485,6 +485,7 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 		self.tool_registry["get_top_news"] = self._tool_get_top_news
 		self.tool_registry["generate_random_number"] = self._tool_generate_random_number
 		self.tool_registry["find_nearby_restaurants"] = self._tool_find_nearby_restaurants
+		self.tool_registry["convert_currency"] = self._tool_convert_currency
 		logging.info("Registered %d built-in tool(s): %s", len(self.tool_registry), list(self.tool_registry.keys()))
 
 	@staticmethod
@@ -647,6 +648,48 @@ class StreamingS2SPipeline(S2SPipelineInterface):
 			return json.dumps({"error": "min must be less than or equal to max"})
 		result = random.randint(min_val, max_val)
 		return json.dumps({"result": result, "min": min_val, "max": max_val})
+
+	@staticmethod
+	def _tool_convert_currency(args: dict) -> str:
+		"""Convert currency using current rates from the no-key Frankfurter API."""
+		try:
+			amount = float(args["amount"])
+		except (KeyError, TypeError, ValueError):
+			return json.dumps({"error": "amount must be a number"})
+
+		from_currency = str(args.get("from_currency", "")).strip().upper()
+		to_currency = str(args.get("to_currency", "")).strip().upper()
+		if not from_currency or not to_currency:
+			return json.dumps({"error": "from_currency and to_currency are required"})
+		if from_currency == to_currency:
+			return json.dumps({
+				"amount": amount,
+				"from_currency": from_currency,
+				"to_currency": to_currency,
+				"exchange_rate": 1.0,
+				"converted_amount": amount,
+			})
+
+		url = "https://api.frankfurter.app/latest?" + urllib.parse.urlencode({
+			"amount": amount,
+			"from": from_currency,
+			"to": to_currency,
+		})
+		req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+		try:
+			with urllib.request.urlopen(req, timeout=8) as resp:
+				data = json.loads(resp.read().decode())
+			converted_amount = data["rates"][to_currency]
+			return json.dumps({
+				"amount": amount,
+				"from_currency": from_currency,
+				"to_currency": to_currency,
+				"exchange_rate": round(float(converted_amount) / amount, 6) if amount else None,
+				"converted_amount": converted_amount,
+				"rate_date": data.get("date"),
+			})
+		except Exception as e:
+			return json.dumps({"error": f"Currency API failed: {e}"})
 
 	@staticmethod
 	def _tool_find_nearby_restaurants(args: dict) -> str:

@@ -48,7 +48,7 @@ def _merge_stt_config_from_checkpoint(cfg, model_config):
     config_path = os.path.join(stt_ckpt, HF_CONFIG_NAME)
     if not os.path.isfile(config_path):
         logging.warning(
-            "[nemotron_voicechat_infer] No %s in STT checkpoint dir %s; using inference config only.",
+            "[nemotron-labs-voicechat_infer] No %s in STT checkpoint dir %s; using inference config only.",
             HF_CONFIG_NAME,
             stt_ckpt,
         )
@@ -66,7 +66,7 @@ def _merge_stt_config_from_checkpoint(cfg, model_config):
     model_config["model"]["stt"]["model"]["pretrained_weights"] = False
     if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
         logging.info(
-            "[nemotron_voicechat_infer] Merged STT config: checkpoint=%s, inference overrides on top (S2T-style).",
+            "[nemotron-labs-voicechat_infer] Merged STT config: checkpoint=%s, inference overrides on top (S2T-style).",
             stt_ckpt,
         )
 
@@ -97,7 +97,7 @@ def inference(cfg):
         tts_ckpt = getattr(model.tts_model, "cfg", None) and model.tts_model.cfg.get("pretrained_model", None)
         speaker_ref = getattr(model, "cfg", None) and model.cfg.get("inference_speaker_reference", None)
         logging.info("=" * 60)
-        logging.info("[nemotron_voicechat_infer] Loaded checkpoints:")
+        logging.info("[nemotron-labs-voicechat_infer] Loaded checkpoints:")
         logging.info("  STT (pretrained_s2s_model): %s", stt_ckpt or "(none)")
         logging.info("  TTS (pretrained_model):     %s", tts_ckpt or "(none)")
         logging.info("  Speaker reference:         %s", speaker_ref or "(none)")

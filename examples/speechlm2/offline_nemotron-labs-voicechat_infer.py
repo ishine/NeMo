@@ -14,13 +14,13 @@
 # limitations under the License.
 
 """
-Minimal offline Nemotron VoiceChat inference from an HF-format checkpoint.
+Minimal offline nemotron-labs-voicechat inference from an HF-format checkpoint.
 
 Requires this repository to precede any installed nemo_toolkit on PYTHONPATH:
     export PYTHONPATH=/path/to/Speech:$PYTHONPATH
 
 Usage:
-    python offline_voicechat_infer.py \\
+    python offline_nemotron-labs-voicechat_infer.py \\
         --checkpoint /path/to/hf_checkpoint \\
         --wav /path/to/input.wav \\
         --system-prompt "You are a helpful assistant." \\
@@ -49,7 +49,7 @@ DEFAULT_SYSTEM_PROMPT = (
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Offline Nemotron VoiceChat inference")
+    parser = argparse.ArgumentParser(description="Offline nemotron-labs-voicechat inference")
     parser.add_argument("--checkpoint", required=True, help="HF checkpoint directory (config.json + weights)")
     parser.add_argument("--wav", required=True, help="Input wav file (resampled to 16 kHz mono)")
     parser.add_argument("--output-dir", required=True, help="Directory for {input_stem}_output.txt, _output.wav, _combined.wav")

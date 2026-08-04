@@ -14,13 +14,13 @@
 # limitations under the License.
 
 """
-Offline Nemotron VoiceChat inference with function calling (two-pass).
+Offline nemotron-labs-voicechat inference with function calling (two-pass).
 
 Requires this repository to precede any installed nemo_toolkit on PYTHONPATH:
     export PYTHONPATH=/path/to/Speech:$PYTHONPATH
 
 Usage:
-    python offline_voicechat_fc_infer.py \\
+    python offline_nemotron-labs-voicechat_fc_infer.py \\
         --checkpoint /path/to/hf_checkpoint \\
         --wav /path/to/input.wav \\
         --api-response-json /path/to/random_number_response.json \\
@@ -94,7 +94,7 @@ DEFAULT_TOOLS = [
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Offline Nemotron VoiceChat FC inference")
+    parser = argparse.ArgumentParser(description="Offline nemotron-labs-voicechat FC inference")
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--wav", required=True)
     parser.add_argument("--output-dir", required=True)

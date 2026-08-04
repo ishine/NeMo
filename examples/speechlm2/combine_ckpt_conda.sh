@@ -23,7 +23,7 @@ set -euo pipefail
 NEMO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SPK_NAME=Aria
 SEED=42
-CONFIG_NAME=nemotron_voicechat_nano9b
+CONFIG_NAME=nemotron-labs-voicechat
 GPU=0
 CACHE=""
 RESULTS_ROOT=""
@@ -168,7 +168,7 @@ mkdir -p "${RESULTS_DIR}"
 export MASTER_PORT="$(python -c 'import socket; s=socket.socket(); s.bind(("",0)); print(s.getsockname()[1]); s.close()')"
 
 HYDRA_FULL_ERROR=1 TORCH_CUDNN_V8_API_ENABLED=1 \
-python "${NEMO_DIR}/examples/speechlm2/nemotron_voicechat_infer_voice_lock.py" \
+python "${NEMO_DIR}/examples/speechlm2/nemotron-labs-voicechat_infer_voice_lock.py" \
   --config-path="${MERGE_CONFIG_PATH}" \
   --config-name="${CONFIG_NAME}" \
   exp_manager.name="${HF_CKPT_BASENAME}" \
