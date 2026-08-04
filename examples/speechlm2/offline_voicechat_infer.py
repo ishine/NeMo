@@ -20,7 +20,7 @@ Requires this repository to precede any installed nemo_toolkit on PYTHONPATH:
     export PYTHONPATH=/path/to/Speech:$PYTHONPATH
 
 Usage:
-    python offline_nemotron-labs-voicechat_infer.py \\
+    python offline_voicechat_infer.py \\
         --checkpoint /path/to/hf_checkpoint \\
         --wav /path/to/input.wav \\
         --system-prompt "You are a helpful assistant." \\

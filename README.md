@@ -103,7 +103,7 @@ Then run:
 
 ```bash
 # General
-python "$NEMO_DIR/examples/speechlm2/offline_nemotron-labs-voicechat_infer.py" \
+python "$NEMO_DIR/examples/speechlm2/offline_voicechat_infer.py" \
   --checkpoint /path/to/checkpoint \
   --wav "$NEMO_DIR/examples/speechlm2/sample_audio/sample_general.wav" \
   --output-dir /path/to/output
@@ -120,7 +120,7 @@ and TTS-friendly. For interactive function calling with live tool execution, see
 
 ```bash
 # Function calling
-python "$NEMO_DIR/examples/speechlm2/offline_nemotron-labs-voicechat_fc_infer.py" \
+python "$NEMO_DIR/examples/speechlm2/offline_voicechat_fc_infer.py" \
   --checkpoint /path/to/checkpoint \
   --wav "$NEMO_DIR/examples/speechlm2/sample_audio/sample_fc.wav" \
   --api-response-json "$NEMO_DIR/examples/speechlm2/function_calling/random_number_response.json" \
@@ -154,7 +154,7 @@ The [NemotronLabs Voicechat container](voicechat_realtime_instructions/deploy.md
 
 The default Jinja template appends the available tools and tool-call protocol to
 the supplied system message. See
-`examples/speechlm2/offline_nemotron-labs-voicechat_fc_infer.py` for the default
+`examples/speechlm2/offline_voicechat_fc_infer.py` for the default
 function-calling system prompt and prompt construction logic.
 
 System prompts and API/tool responses must be ASCII-only. Avoid Unicode
